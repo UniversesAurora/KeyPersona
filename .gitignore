@@ -1,7 +1,3 @@
-*.log
-config.ini.bak
-state.ini
-state.ini.bak
-*.tmp.*
-ime-memory.exe
-tools/ime-probe.txt
+/self-test.log
+/fatal-error.log
+/tools/ime-probe.txt

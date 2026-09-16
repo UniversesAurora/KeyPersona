@@ -100,7 +100,7 @@ state=english-us
 
 规则还可以使用 `pathRegex`、`classRegex` 和 `titleRegex`。同一规则内填写的条件全部需要匹配。
 
-通过托盘为当前窗口建立的规则会保存到运行时 `config.ini` 的 `[window-rule.<短 ID>]`，按该窗口现有的持久身份匹配，用户可以直接编辑。程序修改规则前会把配置备份到 `config.ini.bak`；源码仓库里的 `config.ini` 仍只是默认模板。
+通过托盘为当前窗口建立的规则会保存到运行时 `config.ini` 的 `[window-rule.<短 ID>]`，按该窗口现有的持久身份匹配，用户可以直接编辑；源码仓库里的 `config.ini` 仍只是默认模板。
 
 把某个 exe 加入 `[identity]` 的 `windowModeExe`，即可让同一应用的不同窗口分别记忆。否则按应用 exe 共享状态。
 
