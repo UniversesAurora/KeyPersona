@@ -120,7 +120,7 @@ class ImeMemoryApp {
             this.SessionWindows[hwndKey] := StateClone(nextWindow)
         }
         this.CurrentWindow := nextWindow
-        this.CurrentRule := this.Rules.Match(nextWindow)
+        this.CurrentRule := this.MatchRule(nextWindow)
         desired := this.SelectDesiredState(nextWindow, this.CurrentRule)
         this.CurrentSource := MapGet(desired, "source", "")
         this.Logger.Info("Foreground: " nextWindow["exe"] " [" nextWindow["mode"] "]"
@@ -160,6 +160,20 @@ class ImeMemoryApp {
         state["source"] := "default"
         this.SessionStates[hwndKey] := StateClone(state)
         return state
+    }
+
+    MatchRule(windowInfo) {
+        windowRule := this.Config.GetWindowRule(windowInfo)
+        if windowRule.Count
+            return windowRule
+        applicationRule := this.Rules.Match(windowInfo)
+        if applicationRule.Count
+            applicationRule["scope"] := "application"
+        return applicationRule
+    }
+
+    RefreshRuleEngine() {
+        this.Rules := RuleEngine(this.Config, this.Logger)
     }
 
     ApplyState(windowInfo, desiredState, reason := "restore") {
@@ -292,13 +306,13 @@ class ImeMemoryApp {
         if this.ObserveOnly {
             if (!leaving && windowInfo["hwnd"] = MapGet(this.CurrentWindow, "hwnd", 0)) {
                 this.CurrentState := actual
-                this.CurrentRule := this.Rules.Match(windowInfo)
-                this.CurrentSource := "observed"
+                this.CurrentRule := this.MatchRule(windowInfo)
+                this.CurrentSource := this.CurrentRule.Count ? "rule" : "observed"
                 this.Tray.Refresh()
             }
             return
         }
-        matchedRule := this.Rules.Match(windowInfo)
+        matchedRule := this.MatchRule(windowInfo)
         if matchedRule.Count {
             if (!leaving && !this.ObserveOnly && !StateMatches(actual, matchedRule["state"]))
                 this.ApplyState(windowInfo, matchedRule["state"], "user-rule")
@@ -306,6 +320,18 @@ class ImeMemoryApp {
                 this.CurrentState := actual
                 this.CurrentRule := matchedRule
                 this.CurrentSource := "rule"
+                this.Tray.Refresh()
+            }
+            return
+        }
+        remembered := this.SessionStates.Has(hwndKey) ? this.SessionStates[hwndKey] : Map()
+        if (MapGet(remembered, "source", "") = "manual") {
+            if (!leaving && !StateMatches(actual, remembered))
+                this.ApplyState(windowInfo, remembered, "legacy-window-rule")
+            if (!leaving && windowInfo["hwnd"] = MapGet(this.CurrentWindow, "hwnd", 0)) {
+                this.CurrentState := actual
+                this.CurrentRule := Map()
+                this.CurrentSource := "manual"
                 this.Tray.Refresh()
             }
             return
@@ -380,20 +406,69 @@ class ImeMemoryApp {
     SetCurrentState(stateName) {
         if !this.CurrentWindow.Count
             return
-        if this.CurrentRule.Count {
-            TrayTip("当前窗口命中了用户规则，不能用自动记忆覆盖。", "IME Memory")
-            return
-        }
         state := this.Config.GetNamedState(stateName)
         if !state.Count
             return
-        state["source"] := "manual"
+        if !this.Config.SetWindowRule(this.CurrentWindow, stateName) {
+            TrayTip("无法保存当前窗口的用户规则。", "IME Memory", "Iconx")
+            return
+        }
+        this.RefreshRuleEngine()
         hwndKey := this.CurrentWindow["hwnd"] ""
-        this.SessionStates[hwndKey] := StateClone(state)
-        this.Store.Upsert(this.CurrentWindow, state, "manual")
-        this.CurrentSource := "manual"
-        this.ScheduleFlush()
-        this.ApplyState(this.CurrentWindow, state, "tray")
+        saved := this.Store.Find(this.CurrentWindow)
+        if (MapGet(saved, "source", "") = "manual") {
+            this.Store.Remove(this.CurrentWindow)
+            this.ScheduleFlush()
+        }
+        if this.SessionStates.Has(hwndKey)
+            this.SessionStates.Delete(hwndKey)
+        this.CurrentRule := this.MatchRule(this.CurrentWindow)
+        desired := this.SelectDesiredState(this.CurrentWindow, this.CurrentRule)
+        this.CurrentSource := "rule"
+        this.ApplyState(this.CurrentWindow, desired, "window-rule")
+        this.Tray.Refresh(true)
+    }
+
+    UseGlobalForCurrentWindow(*) {
+        if !this.CurrentWindow.Count
+            return
+        saved := this.Store.Find(this.CurrentWindow)
+        legacyManual := MapGet(saved, "source", "") = "manual"
+        hasWindowRule := this.Config.GetWindowRule(this.CurrentWindow).Count > 0
+        applicationRule := this.Rules.Match(this.CurrentWindow)
+        if (!hasWindowRule && !applicationRule.Count && !legacyManual)
+            return
+
+        removedCount := 0
+        if this.Config.RemoveWindowRule(this.CurrentWindow) {
+            removedCount += 1
+        }
+        this.RefreshRuleEngine()
+        Loop 20 {
+            applicationRule := this.Rules.Match(this.CurrentWindow)
+            if !applicationRule.Count
+                break
+            if !this.Config.RemoveApplicationRule(applicationRule["name"])
+                break
+            removedCount += 1
+            this.RefreshRuleEngine()
+        }
+        if legacyManual {
+            this.Store.Remove(this.CurrentWindow)
+            this.ScheduleFlush()
+            removedCount += 1
+        }
+
+        hwndKey := this.CurrentWindow["hwnd"] ""
+        if this.SessionStates.Has(hwndKey)
+            this.SessionStates.Delete(hwndKey)
+        this.CurrentRule := this.MatchRule(this.CurrentWindow)
+        desired := this.SelectDesiredState(this.CurrentWindow, this.CurrentRule)
+        this.CurrentSource := MapGet(desired, "source", "")
+        if !this.ObserveOnly
+            this.ApplyState(this.CurrentWindow, desired, "remove-user-rule")
+        if removedCount
+            TrayTip("已移除当前窗口的用户规则；自动记忆保持不变。", "IME Memory", "Mute")
         this.Tray.Refresh(true)
     }
 
@@ -427,12 +502,17 @@ class ImeMemoryApp {
     ClearCurrentRecord(*) {
         if !this.CurrentWindow.Count
             return
+        saved := this.Store.Find(this.CurrentWindow)
+        if (!saved.Count || MapGet(saved, "source", "learned") = "manual") {
+            TrayTip("当前窗口没有可清除的自动记忆。", "IME Memory", "Mute")
+            return
+        }
         hwndKey := this.CurrentWindow["hwnd"] ""
         this.Store.Remove(this.CurrentWindow)
         if this.SessionStates.Has(hwndKey)
             this.SessionStates.Delete(hwndKey)
         this.ScheduleFlush()
-        rule := this.Rules.Match(this.CurrentWindow)
+        rule := this.MatchRule(this.CurrentWindow)
         desired := this.SelectDesiredState(this.CurrentWindow, rule)
         this.CurrentSource := MapGet(desired, "source", "")
         if !this.ObserveOnly

@@ -1,4 +1,5 @@
 *.log
+config.ini.bak
 state.ini
 state.ini.bak
 *.tmp.*

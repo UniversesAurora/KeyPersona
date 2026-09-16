@@ -64,19 +64,27 @@ class TrayMenuController {
         tray.Disable(defaultStatus)
         this.DefaultMenu := Menu()
         this.StateMenu := Menu()
+        hasUserRule := rule.Count > 0 || this.App.CurrentSource = "manual"
+        selectedStateName := this.SelectedRuleStateName(window, rule)
+        this.StateMenu.Add("全局默认（无用户规则）", ObjBindMethod(this.App, "UseGlobalForCurrentWindow"))
+        if !hasUserRule
+            this.StateMenu.Check("全局默认（无用户规则）")
+        this.StateMenu.Add()
         for stateName, namedState in this.App.Config.NamedStates {
             label := this.StateMenuLabel(stateName, namedState)
             this.DefaultMenu.Add(label, ObjBindMethod(this, "SetDefaultState", stateName))
             if (stateName = this.App.Config.DefaultState)
                 this.DefaultMenu.Check(label)
             this.StateMenu.Add(label, ObjBindMethod(this, "SetState", stateName))
+            if (stateName = selectedStateName)
+                this.StateMenu.Check(label)
         }
         tray.Add("全局默认输入法", this.DefaultMenu)
         tray.Add("设置当前窗口为", this.StateMenu)
-        tray.Add("清除当前窗口记录", ObjBindMethod(this.App, "ClearCurrentRecord"))
+        tray.Add("清除当前窗口的自动记忆", ObjBindMethod(this.App, "ClearCurrentRecord"))
         if !window.Count {
             tray.Disable("设置当前窗口为")
-            tray.Disable("清除当前窗口记录")
+            tray.Disable("清除当前窗口的自动记忆")
         }
         tray.Add()
         tray.Add(this.BacktickLabel, ObjBindMethod(this.App, "ToggleBacktickInChinese"))
@@ -108,8 +116,11 @@ class TrayMenuController {
     }
 
     SourceLabel(source, rule) {
-        if (source = "rule")
+        if (source = "rule") {
+            if (rule.Count && MapGet(rule, "scope", "application") = "window")
+                return "用户规则（当前窗口）"
             return "用户规则" (rule.Count ? "（" rule["name"] "）" : "")
+        }
         if (source = "manual")
             return "手动指定"
         if (source = "learned")
@@ -119,6 +130,22 @@ class TrayMenuController {
         if (source = "observed")
             return "仅观察"
         return "检测中"
+    }
+
+    SelectedRuleStateName(window, rule) {
+        if rule.Count
+            return MapGet(rule, "stateName", "")
+        if (this.App.CurrentSource != "manual" || !window.Count)
+            return ""
+        hwndKey := MapGet(window, "hwnd", 0) ""
+        if !this.App.SessionStates.Has(hwndKey)
+            return ""
+        manualState := this.App.SessionStates[hwndKey]
+        for stateName, namedState in this.App.Config.NamedStates {
+            if (StateSignature(manualState) = StateSignature(namedState))
+                return stateName
+        }
+        return ""
     }
 
     ShortState(state) {
