@@ -16,10 +16,19 @@ class StartupManager {
     }
 
     IsEnabled() {
-        try configured := RegRead(StartupManager.RunKey, StartupManager.ValueName)
-        catch
+        configured := this.RegisteredCommand()
+        if (configured = "")
             return false
         return StrLower(Trim(configured)) = StrLower(this.CommandLine())
+    }
+
+    IsRegistered() {
+        return this.RegisteredCommand() != ""
+    }
+
+    RegisteredCommand() {
+        try return RegRead(StartupManager.RunKey, StartupManager.ValueName)
+        return ""
     }
 
     Enable() {
@@ -33,7 +42,7 @@ class StartupManager {
 
     Disable() {
         try RegDelete(StartupManager.RunKey, StartupManager.ValueName)
-        if this.IsEnabled()
+        if this.IsRegistered()
             throw Error("Windows startup registration could not be removed")
         this.Logger.Info("Startup disabled")
         return false
@@ -43,4 +52,3 @@ class StartupManager {
         return this.IsEnabled() ? this.Disable() : this.Enable()
     }
 }
-
