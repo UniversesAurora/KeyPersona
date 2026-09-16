@@ -3,4 +3,4 @@ state.ini
 state.ini.bak
 *.tmp.*
 ime-memory.exe
-
+tools/ime-probe.txt
