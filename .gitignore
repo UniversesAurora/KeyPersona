@@ -1,0 +1,6 @@
+*.log
+state.ini
+state.ini.bak
+*.tmp.*
+ime-memory.exe
+
