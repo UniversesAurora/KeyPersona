@@ -11,6 +11,7 @@ Persistent
 #Include lib\Utils.ahk
 #Include lib\Config.ahk
 #Include lib\StartupManager.ahk
+#Include lib\AboutDialog.ahk
 #Include lib\StateStore.ahk
 #Include lib\WindowIdentity.ahk
 #Include lib\Rules.ahk

@@ -236,7 +236,9 @@ state=english-us
 最低菜单项：
 
 - Enable / Disable
+- 开机自启动
 - 当前窗口：exe、身份模式、已观察状态、命中的规则
+- 设置全局默认输入法
 - 设置当前窗口为 English US
 - 设置当前窗口为微信输入法（中文）
 - 设置当前窗口为微信输入法（英文）
@@ -244,30 +246,41 @@ state=english-us
 - 打开配置文件
 - 打开状态文件
 - Reload
+- About
 - Exit
 
-菜单操作后立即刷新当前窗口，但不会抢焦点或弹出常驻窗口。
+左右键单击托盘图标都可以打开菜单。菜单操作后立即刷新当前窗口，但不会抢焦点或弹出常驻窗口；“关于”是用户主动打开的临时窗口。
 
 ## 11. 模块划分
 
 ```text
 ime-memory/
 ├─ ime-memory.ahk          # 入口、生命周期
+├─ build.ps1              # 自检、编译、安装和重启
 ├─ config.ini              # 用户配置
-├─ state.ini               # 自动生成
+├─ assets/
+│  ├─ ime-memory.ico       # 多尺寸程序图标
+│  └─ ime-memory-icon.png  # 图标主稿
 ├─ lib/
 │  ├─ App.ahk              # 协调状态机
+│  ├─ Config.ahk           # 配置读取和默认状态写入
 │  ├─ WinEventHook.ahk     # foreground/focus 事件
 │  ├─ WindowIdentity.ahk   # 宿主解析与持久 key
 │  ├─ InputProfiles.ahk    # profile 枚举、TSF/HKL 切换
 │  ├─ ImeMode.ahk          # IME open/conversion 读写
 │  ├─ Rules.ahk            # 规则匹配
-│  ├─ StateStore.ahk       # INI、原子写盘、迁移
-│  └─ TrayMenu.ahk         # 托盘交互
+│  ├─ StateStore.ahk       # 状态 INI、原子写盘、迁移
+│  ├─ StartupManager.ahk   # 当前用户登录自启动
+│  ├─ AboutDialog.ahk      # 关于窗口
+│  ├─ TrayMenu.ahk         # 托盘交互
+│  ├─ SelfTest.ahk         # 自检
+│  └─ Utils.ahk            # 通用函数
 ├─ tools/
 │  └─ ime-probe.ahk        # 环境能力探针
 └─ README.md
 ```
+
+运行时生成的 `state.ini`、日志和编译后的 EXE 位于安装根目录，不属于源码仓库。
 
 依赖方向保持单向，Win32 封装和业务策略分开，后续替换某个输入法实现时不会碰窗口记忆层。
 

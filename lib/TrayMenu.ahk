@@ -6,6 +6,7 @@ class TrayMenuController {
         this.LastFingerprint := ""
         this.StateMenu := ""
         this.DefaultMenu := ""
+        this.About := AboutDialog()
         this.LastLeftClick := 0
         this.TrayMessageCallback := ObjBindMethod(this, "OnTrayMessage")
         this.ShowMenuCallback := ObjBindMethod(this, "ShowMenu")
@@ -72,6 +73,7 @@ class TrayMenuController {
         tray.Add("打开状态文件", ObjBindMethod(this, "OpenState"))
         tray.Add("Reload", ObjBindMethod(this.App, "ReloadConfiguration"))
         tray.Add()
+        tray.Add("关于 IME Memory", ObjBindMethod(this, "ShowAbout"))
         tray.Add("Exit", ObjBindMethod(this, "ExitApplication"))
     }
 
@@ -123,6 +125,10 @@ class TrayMenuController {
         A_TrayMenu.Show()
     }
 
+    ShowAbout(*) {
+        this.About.Show()
+    }
+
     OpenConfig(*) {
         Run(this.App.Config.Path)
     }
@@ -142,5 +148,6 @@ class TrayMenuController {
     Dispose() {
         try OnMessage(0x0404, this.TrayMessageCallback, 0)
         try SetTimer(this.ShowMenuCallback, 0)
+        try this.About.Dispose()
     }
 }
