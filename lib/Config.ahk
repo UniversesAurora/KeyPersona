@@ -28,6 +28,7 @@ class ImeMemoryConfig {
         this.BacktickInChinese := ParseBool(this.Doc.Get("typing", "backtickInChinese", "0"), false)
         this.NamedStates := this.LoadNamedStates()
         this.RuleSections := this.LoadPrefixedSections("rule.")
+        this.WindowRules := this.LoadWindowRules()
     }
 
     LoadNamedStates() {
@@ -60,6 +61,25 @@ class ImeMemoryConfig {
         return result
     }
 
+    LoadWindowRules() {
+        rules := Map()
+        for section, values in this.Doc.Sections {
+            if !RegExMatch(section, "i)^window-rule\.(.+)$", &match)
+                continue
+            identityKey := IniUnescape(MapGet(values, "identityKey", ""))
+            stateName := MapGet(values, "state", "")
+            if (identityKey = "" || !this.NamedStates.Has(stateName))
+                continue
+            rules[identityKey] := Map(
+                "name", match[1],
+                "section", section,
+                "identityKey", identityKey,
+                "stateName", stateName
+            )
+        }
+        return rules
+    }
+
     GetNamedState(name) {
         return this.NamedStates.Has(name) ? StateClone(this.NamedStates[name]) : Map()
     }
@@ -77,6 +97,69 @@ class ImeMemoryConfig {
         IniWrite(value, this.Path, "typing", "backtickInChinese")
         this.BacktickInChinese := !!enabled
         return this.BacktickInChinese
+    }
+
+    GetWindowRule(windowInfo) {
+        identityKey := MapGet(windowInfo, "identityKey", "")
+        if (identityKey = "" || !this.WindowRules.Has(identityKey))
+            return Map()
+        stored := this.WindowRules[identityKey]
+        stateName := stored["stateName"]
+        state := this.GetNamedState(stateName)
+        if !state.Count
+            return Map()
+        return Map(
+            "name", stored["name"],
+            "scope", "window",
+            "stateName", stateName,
+            "state", state
+        )
+    }
+
+    SetWindowRule(windowInfo, stateName) {
+        identityKey := MapGet(windowInfo, "identityKey", "")
+        if (identityKey = "" || !this.NamedStates.Has(stateName))
+            return false
+        this.BackupBeforeRuleChange()
+        section := "window-rule." Fnv1a32(identityKey)
+        IniWrite(IniEscape(identityKey), this.Path, section, "identityKey")
+        IniWrite(stateName, this.Path, section, "state")
+        IniWrite(MapGet(windowInfo, "exe", ""), this.Path, section, "exe")
+        IniWrite(MapGet(windowInfo, "mode", "app"), this.Path, section, "mode")
+        this.Reload()
+        return this.WindowRules.Has(identityKey)
+    }
+
+    RemoveWindowRule(windowInfo) {
+        identityKey := MapGet(windowInfo, "identityKey", "")
+        if (identityKey = "" || !this.WindowRules.Has(identityKey))
+            return false
+        this.BackupBeforeRuleChange()
+        section := this.WindowRules[identityKey]["section"]
+        IniDelete(this.Path, section)
+        this.Reload()
+        return !this.WindowRules.Has(identityKey)
+    }
+
+    RemoveApplicationRule(name) {
+        wanted := StrLower("rule." name)
+        sectionName := ""
+        for section in this.Doc.Sections {
+            if (StrLower(section) = wanted) {
+                sectionName := section
+                break
+            }
+        }
+        if (sectionName = "")
+            return false
+        this.BackupBeforeRuleChange()
+        IniDelete(this.Path, sectionName)
+        this.Reload()
+        return true
+    }
+
+    BackupBeforeRuleChange() {
+        try FileCopy(this.Path, this.Path ".bak", true)
     }
 
     EnsureDefaultFile() {

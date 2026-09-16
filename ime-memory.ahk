@@ -34,7 +34,8 @@ if HasArgument("--self-test") {
 
 observeOnly := HasArgument("--observe-only")
 smokeSeconds := ArgumentValue("--smoke-seconds=", 0)
-global IME_MEMORY_APP := ImeMemoryApp(A_ScriptDir, observeOnly)
+appBaseDir := RuntimeBaseDir()
+global IME_MEMORY_APP := ImeMemoryApp(appBaseDir, observeOnly)
 OnExit(ObjBindMethod(IME_MEMORY_APP, "Shutdown"))
 
 try {
@@ -61,6 +62,15 @@ ArgumentValue(prefix, defaultValue) {
             return ParseInt(SubStr(arg, StrLen(prefix) + 1), defaultValue, 0, 3600)
     }
     return defaultValue
+}
+
+RuntimeBaseDir() {
+    if A_IsCompiled
+        return A_ScriptDir
+    SplitPath(A_ScriptDir, &sourceFolder, &parentFolder)
+    if (StrLower(sourceFolder) = "src")
+        return parentFolder
+    return A_ScriptDir
 }
 
 GlobalErrorHandler(thrown, mode) {

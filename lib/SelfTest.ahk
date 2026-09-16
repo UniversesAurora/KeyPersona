@@ -30,6 +30,9 @@ RunSelfTests(baseDir) {
     AssertTest(noOpProbe.Apply(Map(), changedState) && noOpProbe.SetCalls = 1,
         "IME mode writes only changed fields", failures)
     AssertTest(ApplicationVersion() != "", "Application version discovery", failures)
+    SplitPath(baseDir, &selfTestFolder, &selfTestParent)
+    if (StrLower(selfTestFolder) = "src")
+        AssertTest(RuntimeBaseDir() = selfTestParent, "Source runtime uses install-root configuration", failures)
 
     tempPath := A_Temp "\ime-memory-selftest-" DllCall("kernel32\GetCurrentProcessId", "UInt") ".ini"
     try FileDelete(tempPath)
@@ -51,9 +54,24 @@ RunSelfTests(baseDir) {
     editableConfig := ImeMemoryConfig(tempConfigDir)
     AssertTest(editableConfig.SetDefaultState("english-us"), "Default state write", failures)
     AssertTest(editableConfig.SetBacktickInChinese(true), "Backtick option write", failures)
+    configWindow := Map(
+        "identityKey", "sample.exe|SampleClass|Sample",
+        "exe", "sample.exe", "mode", "window"
+    )
+    AssertTest(editableConfig.SetWindowRule(configWindow, "wetype-chinese"), "Window rule write", failures)
+    storedWindowRule := editableConfig.GetWindowRule(configWindow)
+    AssertTest(storedWindowRule.Count && storedWindowRule["stateName"] = "wetype-chinese",
+        "Window rule lookup", failures)
     reloadedConfig := ImeMemoryConfig(tempConfigDir)
     AssertTest(reloadedConfig.DefaultState = "english-us", "Default state reload", failures)
     AssertTest(reloadedConfig.BacktickInChinese, "Backtick option reload", failures)
+    AssertTest(reloadedConfig.GetWindowRule(configWindow).Count > 0, "Window rule reload", failures)
+    AssertTest(reloadedConfig.RemoveWindowRule(configWindow), "Window rule removal", failures)
+    AssertTest(!reloadedConfig.GetWindowRule(configWindow).Count, "Window rule removal verification", failures)
+    AssertTest(reloadedConfig.RemoveApplicationRule("raycast"), "Application rule removal", failures)
+    raycastWindow := Map("exe", "Raycast.exe", "path", "Raycast.exe", "class", "Raycast", "title", "Raycast")
+    AssertTest(!RuleEngine(reloadedConfig, testLogger).Match(raycastWindow).Count,
+        "Application rule removal verification", failures)
     try DirDelete(tempConfigDir, true)
 
     tempState := A_Temp "\ime-memory-state-selftest-" DllCall("kernel32\GetCurrentProcessId", "UInt") ".ini"
@@ -69,11 +87,11 @@ RunSelfTests(baseDir) {
         "profile", "0409:00000409", "imeOpen", "unknown",
         "conversion", "unknown", "sentence", "unknown"
     )
-    storeApi.Upsert(syntheticWindow, learnedState, "manual")
+    storeApi.Upsert(syntheticWindow, learnedState, "learned")
     AssertTest(storeApi.Flush(), "State store atomic flush", failures)
     loadedStore := StateStore(tempState, testLogger)
     AssertTest(StateMatches(loadedStore.Find(syntheticWindow), learnedState), "State store round-trip", failures)
-    AssertTest(MapGet(loadedStore.Find(syntheticWindow), "source", "") = "manual", "State source round-trip", failures)
+    AssertTest(MapGet(loadedStore.Find(syntheticWindow), "source", "") = "learned", "State source round-trip", failures)
     FileCopy(tempState, tempState ".bak", true)
     FileDelete(tempState)
     FileAppend("[broken`n", tempState, "UTF-8")
