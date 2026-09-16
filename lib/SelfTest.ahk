@@ -21,6 +21,7 @@ RunSelfTests(baseDir) {
     changedState := Map("imeOpen", "0", "conversion", "0x1", "sentence", "0x8")
     AssertTest(noOpProbe.Apply(Map(), changedState) && noOpProbe.SetCalls = 1,
         "IME mode writes only changed fields", failures)
+    AssertTest(ApplicationVersion() != "", "Application version discovery", failures)
 
     tempPath := A_Temp "\ime-memory-selftest-" DllCall("kernel32\GetCurrentProcessId", "UInt") ".ini"
     try FileDelete(tempPath)
@@ -32,6 +33,19 @@ RunSelfTests(baseDir) {
 
     testConfig := ImeMemoryConfig(baseDir)
     testLogger := Logger(testConfig.LogPath, "off")
+    startupApi := StartupManager(testLogger)
+    AssertTest(InStr(startupApi.CommandLine(), "--startup") > 0, "Startup command generation", failures)
+
+    tempConfigDir := A_Temp "\ime-memory-config-selftest-" DllCall("kernel32\GetCurrentProcessId", "UInt")
+    try DirDelete(tempConfigDir, true)
+    DirCreate(tempConfigDir)
+    FileCopy(baseDir "\config.ini", tempConfigDir "\config.ini", true)
+    editableConfig := ImeMemoryConfig(tempConfigDir)
+    AssertTest(editableConfig.SetDefaultState("english-us"), "Default state write", failures)
+    reloadedConfig := ImeMemoryConfig(tempConfigDir)
+    AssertTest(reloadedConfig.DefaultState = "english-us", "Default state reload", failures)
+    try DirDelete(tempConfigDir, true)
+
     tempState := A_Temp "\ime-memory-state-selftest-" DllCall("kernel32\GetCurrentProcessId", "UInt") ".ini"
     try FileDelete(tempState)
     try FileDelete(tempState ".bak")

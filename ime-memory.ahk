@@ -3,13 +3,15 @@
 #Warn All, StdOut
 Persistent
 ;@Ahk2Exe-SetName IME Memory
-;@Ahk2Exe-SetDescription Lightweight per-window input method memory for Windows
+;@Ahk2Exe-SetDescription IME Memory
 ;@Ahk2Exe-SetVersion 0.1.2
 ;@Ahk2Exe-SetMainIcon assets\ime-memory.ico
 ;@Ahk2Exe-SetCopyright Personal utility
 
 #Include lib\Utils.ahk
 #Include lib\Config.ahk
+#Include lib\StartupManager.ahk
+#Include lib\AboutDialog.ahk
 #Include lib\StateStore.ahk
 #Include lib\WindowIdentity.ahk
 #Include lib\Rules.ahk

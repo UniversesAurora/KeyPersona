@@ -8,6 +8,7 @@ class ImeMemoryApp {
         this.ObserveOnly := observeOnly
         this.Config := ImeMemoryConfig(baseDir)
         this.Logger := Logger(this.Config.LogPath, this.Config.LogLevel)
+        this.Startup := StartupManager(this.Logger)
         this.Identity := WindowIdentity(this.Config, this.Logger)
         this.Profiles := InputProfiles(this.Identity, this.Config, this.Logger)
         this.Mode := ImeMode(this.Identity, this.Config, this.Logger)
@@ -340,6 +341,25 @@ class ImeMemoryApp {
         this.Tray.Refresh(true)
     }
 
+    SetDefaultState(stateName) {
+        if !this.Config.SetDefaultState(stateName)
+            return
+        this.Logger.Info("Default state changed to " stateName)
+        TrayTip("全局默认输入法已设置为 " stateName "。`n仅用于尚未记录的窗口。", "IME Memory", "Mute")
+        this.Tray.Refresh(true)
+    }
+
+    ToggleStartup(*) {
+        try {
+            enabled := this.Startup.Toggle()
+            TrayTip(enabled ? "已启用当前用户登录时自动启动。" : "已关闭开机自启动。", "IME Memory", "Mute")
+        } catch Error as toggleFailure {
+            this.Logger.Error("Startup toggle failed: " toggleFailure.Message)
+            TrayTip("无法修改开机自启动：" toggleFailure.Message, "IME Memory", "Iconx")
+        }
+        this.Tray.Refresh(true)
+    }
+
     ClearCurrentRecord(*) {
         if !this.CurrentWindow.Count
             return
@@ -368,6 +388,7 @@ class ImeMemoryApp {
         try SetTimer(this.FlushCallback, 0)
         try this.Hook.Stop()
         try OnMessage(ImeMemoryApp.EVENT_MESSAGE, this.MessageCallback, 0)
+        try this.Tray.Dispose()
         try this.Store.Flush()
         this.Logger.Info("IME Memory stopped")
     }
