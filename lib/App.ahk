@@ -102,10 +102,12 @@ class ImeMemoryApp {
         if this.SessionStates.Has(hwndKey)
             return StateClone(this.SessionStates[hwndKey])
         saved := this.Store.Find(windowInfo)
-        if saved.Count {
+        if (saved.Count && HasKnownProfile(saved)) {
             this.SessionStates[hwndKey] := StateClone(saved)
             return saved
         }
+        if saved.Count
+            this.Logger.Debug("Ignored saved state with unknown profile for " MapGet(windowInfo, "exe", ""))
         state := this.Config.GetNamedState(this.Config.DefaultState)
         if !state.Count {
             this.Logger.Warn("Unknown defaultState '" this.Config.DefaultState "'; falling back to English US")
@@ -121,6 +123,12 @@ class ImeMemoryApp {
         hwnd := windowInfo["hwnd"]
         hwndKey := hwnd ""
         actual := this.ReadState(windowInfo)
+        if !HasKnownProfile(actual) {
+            this.CurrentState := actual
+            this.Logger.Debug("Skip " reason " for " MapGet(windowInfo, "exe", "") ": current profile is unknown")
+            this.Tray.Refresh()
+            return
+        }
         if StateMatches(actual, desiredState) {
             this.CurrentState := actual
             this.SessionStates[hwndKey] := StateClone(desiredState)
@@ -154,7 +162,10 @@ class ImeMemoryApp {
             return
         desired := this.DesiredStates[hwndKey]
         profile := this.Profiles.ParseProfile(MapGet(desired, "profile", ""))
-        if (profile.Count && profile["kind"] = "tip")
+        actualProfile := this.Profiles.Read(current)
+        if (profile.Count && profile["kind"] = "tip"
+            && HasKnownProfile(actualProfile)
+            && StrLower(actualProfile["profile"]) = StrLower(profile["id"]))
             this.Mode.Apply(current, desired)
         SetTimer(ObjBindMethod(this, "VerifyApply", generation, hwnd, retryCount), -160)
     }
@@ -171,6 +182,11 @@ class ImeMemoryApp {
         desired := this.DesiredStates[hwndKey]
         actual := this.ReadState(current)
         this.CurrentState := actual
+        if !HasKnownProfile(actual) {
+            this.Logger.Debug("Apply verification skipped for " MapGet(current, "exe", "") ": current profile is unknown")
+            this.Tray.Refresh()
+            return
+        }
         if StateMatches(actual, desired) {
             this.LastSamples[hwndKey] := StateSignature(actual)
             this.StableCounts[hwndKey] := 1
@@ -226,7 +242,7 @@ class ImeMemoryApp {
         if (this.Suppressions.Has(hwndKey) && now < this.Suppressions[hwndKey])
             return
         actual := this.ReadState(windowInfo)
-        if (MapGet(actual, "profile", "unknown") = "unknown")
+        if !HasKnownProfile(actual)
             return
         if this.ObserveOnly {
             if (!leaving && windowInfo["hwnd"] = MapGet(this.CurrentWindow, "hwnd", 0)) {

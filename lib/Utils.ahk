@@ -119,6 +119,11 @@ StateMatches(actual, desired) {
     return true
 }
 
+HasKnownProfile(state) {
+    profile := StrLower(Trim(MapGet(state, "profile", "") ""))
+    return profile != "" && profile != "unknown" && !RegExMatch(profile, ":unknown$")
+}
+
 StateLabel(state) {
     if !IsObject(state)
         return "unknown"

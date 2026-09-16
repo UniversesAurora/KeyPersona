@@ -11,6 +11,9 @@ RunSelfTests(baseDir) {
     desired := Map("profile", "0409:00000409", "imeOpen", "unknown", "conversion", "preserve", "sentence", "preserve")
     actual := Map("profile", "0409:00000409", "imeOpen", "unknown", "conversion", "unknown", "sentence", "unknown")
     AssertTest(StateMatches(actual, desired), "State wildcard comparison", failures)
+    AssertTest(HasKnownProfile(actual), "Known profile detection", failures)
+    AssertTest(!HasKnownProfile(Map("profile", "unknown")), "Plain unknown profile rejection", failures)
+    AssertTest(!HasKnownProfile(Map("profile", "0000:unknown")), "Qualified unknown profile rejection", failures)
     noOpProbe := ImeModeNoOpProbe()
     noOpState := Map("imeOpen", "1", "conversion", "0x1", "sentence", "0x8")
     AssertTest(noOpProbe.Apply(Map(), noOpState) && noOpProbe.SetCalls = 0,
