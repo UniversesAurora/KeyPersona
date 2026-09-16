@@ -4,7 +4,7 @@
 Persistent
 ;@Ahk2Exe-SetName IME Memory
 ;@Ahk2Exe-SetDescription Lightweight per-window input method memory for Windows
-;@Ahk2Exe-SetVersion 0.1.1
+;@Ahk2Exe-SetVersion 0.1.2
 ;@Ahk2Exe-SetMainIcon assets\ime-memory.ico
 ;@Ahk2Exe-SetCopyright Personal utility
 
