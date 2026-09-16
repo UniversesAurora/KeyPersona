@@ -154,9 +154,9 @@ class TrayMenuController {
         name := this.App.Profiles.DisplayName(MapGet(state, "profile", "unknown"))
         open := MapGet(state, "imeOpen", "unknown")
         if (open = "1")
-            return name " / 中文"
+            return name "（中文）"
         if (open = "0")
-            return name " / 英文"
+            return name "（英文）"
         return name
     }
 

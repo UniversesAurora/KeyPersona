@@ -157,9 +157,9 @@ StateLabel(state) {
     profile := MapGet(state, "profile", "unknown")
     open := MapGet(state, "imeOpen", "unknown")
     if (open = "1")
-        return profile " / IME 中文"
+        return profile "（中文）"
     if (open = "0")
-        return profile " / IME 英文"
+        return profile "（英文）"
     return profile
 }
 
