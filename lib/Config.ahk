@@ -120,7 +120,6 @@ class ImeMemoryConfig {
         identityKey := MapGet(windowInfo, "identityKey", "")
         if (identityKey = "" || !this.NamedStates.Has(stateName))
             return false
-        this.BackupBeforeRuleChange()
         section := "window-rule." Fnv1a32(identityKey)
         IniWrite(IniEscape(identityKey), this.Path, section, "identityKey")
         IniWrite(stateName, this.Path, section, "state")
@@ -134,7 +133,6 @@ class ImeMemoryConfig {
         identityKey := MapGet(windowInfo, "identityKey", "")
         if (identityKey = "" || !this.WindowRules.Has(identityKey))
             return false
-        this.BackupBeforeRuleChange()
         section := this.WindowRules[identityKey]["section"]
         IniDelete(this.Path, section)
         this.Reload()
@@ -152,14 +150,9 @@ class ImeMemoryConfig {
         }
         if (sectionName = "")
             return false
-        this.BackupBeforeRuleChange()
         IniDelete(this.Path, sectionName)
         this.Reload()
         return true
-    }
-
-    BackupBeforeRuleChange() {
-        try FileCopy(this.Path, this.Path ".bak", true)
     }
 
     EnsureDefaultFile() {
