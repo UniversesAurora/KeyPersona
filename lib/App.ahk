@@ -25,6 +25,9 @@ class ImeMemoryApp {
         this.Suppressions := Map()
         this.DesiredStates := Map()
         this.ApplyGeneration := 0
+        this.ForegroundSequence := 0
+        this.PendingForegroundHwnd := 0
+        this.PendingForegroundDue := 0
         this.BurstUntil := 0
         this.PollPeriod := 0
         this.Started := false
@@ -47,15 +50,47 @@ class ImeMemoryApp {
         this.Tray.Refresh(true)
         if this.Enabled {
             this.SetPollPeriod(this.Config.ActivePollMs)
-            SetTimer(ObjBindMethod(this, "SwitchToForeground"), -20)
+            this.QueueForegroundSwitch()
         }
     }
 
     OnWinEventMessage(wParam, lParam, message, receiverHwnd) {
         if !this.Enabled || this.ShuttingDown
             return 0
-        SetTimer(ObjBindMethod(this, "SwitchToForeground", wParam), -15)
+        this.QueueForegroundSwitch(wParam)
         return 0
+    }
+
+    QueueForegroundSwitch(eventHwnd := 0, delayMs := "") {
+        if !this.Enabled || this.ShuttingDown
+            return
+        if !eventHwnd
+            eventHwnd := DllCall("user32\GetForegroundWindow", "Ptr")
+        if !eventHwnd
+            return
+        if (delayMs = "")
+            delayMs := this.Config.ForegroundSettleMs
+        now := TickCount64()
+        if (this.PendingForegroundHwnd = eventHwnd && now < this.PendingForegroundDue)
+            return
+        this.ForegroundSequence += 1
+        sequence := this.ForegroundSequence
+        this.PendingForegroundHwnd := eventHwnd
+        this.PendingForegroundDue := now + delayMs
+        SetTimer(ObjBindMethod(this, "CommitForegroundSwitch", sequence, eventHwnd), -delayMs)
+    }
+
+    CommitForegroundSwitch(sequence, eventHwnd) {
+        if (sequence != this.ForegroundSequence || !this.Enabled || this.ShuttingDown)
+            return
+        this.PendingForegroundHwnd := 0
+        this.PendingForegroundDue := 0
+        foreground := DllCall("user32\GetForegroundWindow", "Ptr")
+        if (foreground != eventHwnd) {
+            this.QueueForegroundSwitch(foreground)
+            return
+        }
+        this.SwitchToForeground(foreground)
     }
 
     SwitchToForeground(eventHwnd := 0) {
@@ -227,7 +262,7 @@ class ImeMemoryApp {
         if !foreground.Count
             return
         if (!this.CurrentWindow.Count || foreground["hwnd"] != this.CurrentWindow["hwnd"]) {
-            this.SwitchToForeground(foreground["hwnd"])
+            this.QueueForegroundSwitch(foreground["hwnd"])
             return
         }
         this.ObserveWindow(this.CurrentWindow, "poll", false)
@@ -314,11 +349,14 @@ class ImeMemoryApp {
         if this.Enabled {
             this.Logger.Info("Enabled")
             this.SetPollPeriod(this.Config.ActivePollMs)
-            this.SwitchToForeground()
+            this.QueueForegroundSwitch()
         } else {
             this.Logger.Info("Disabled")
             SetTimer(this.PollCallback, 0)
             this.PollPeriod := 0
+            this.ForegroundSequence += 1
+            this.PendingForegroundHwnd := 0
+            this.PendingForegroundDue := 0
         }
         this.Tray.Refresh(true)
     }

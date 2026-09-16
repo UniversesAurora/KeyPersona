@@ -14,6 +14,7 @@ class ImeMemoryConfig {
         this.Doc := IniDocument.Load(this.Path)
         this.Enabled := ParseBool(this.Doc.Get("general", "enabled", "1"), true)
         this.DefaultState := this.Doc.Get("general", "defaultState", "wetype-chinese")
+        this.ForegroundSettleMs := ParseInt(this.Doc.Get("general", "foregroundSettleMs", "80"), 80, 20, 500)
         this.ActivePollMs := ParseInt(this.Doc.Get("general", "activePollMs", "250"), 250, 100, 2000)
         this.IdlePollMs := ParseInt(this.Doc.Get("general", "idlePollMs", "1000"), 1000, 250, 10000)
         this.BurstDurationMs := ParseInt(this.Doc.Get("general", "burstDurationMs", "2000"), 2000, 250, 10000)
@@ -78,6 +79,7 @@ class ImeMemoryConfig {
             . "[general]`n"
             . "enabled=1`n"
             . "defaultState=wetype-chinese`n"
+            . "foregroundSettleMs=80`n"
             . "activePollMs=250`n"
             . "idlePollMs=1000`n"
             . "burstDurationMs=2000`n"

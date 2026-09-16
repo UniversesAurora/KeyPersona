@@ -86,7 +86,7 @@ Explorer 后续可增加专用 identity provider，用 Shell COM 读取文件夹
 
 ### 3.3 忽略对象
 
-默认忽略程序自己的窗口、桌面、任务切换器、输入法候选框、工具提示、无宿主的临时菜单，以及不应被记忆的系统安全桌面。
+默认忽略程序自己的窗口、桌面、任务切换器、输入法候选框、工具提示、无宿主的临时菜单，以及不应被记忆的系统安全桌面。`Shell_TrayWnd`、`Shell_SecondaryTrayWnd` 和 `TopLevelWindowForOverflowXamlIsland` 等任务栏/托盘表面也会被忽略，因此展开折叠托盘不会把“当前窗口”覆盖成 Explorer；真正的资源管理器 `CabinetWClass` 窗口不受影响。
 
 ## 4. 前台窗口监听
 
@@ -95,7 +95,8 @@ Explorer 后续可增加专用 identity provider，用 Shell COM 读取文件夹
 ```text
 EVENT_SYSTEM_FOREGROUND
   → WinEvent 回调只投递内部消息
-  → 10–30 ms 后重新读取 GetForegroundWindow
+  → 默认等待 80 ms，让 Windows 先完成自己的输入法恢复
+  → 重新读取 GetForegroundWindow 和当前输入法状态
   → 解析宿主身份
   → 按优先级选择目标状态
   → 恢复并异步验证
@@ -103,7 +104,7 @@ EVENT_SYSTEM_FOREGROUND
 
 使用 `WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS`，不向其他进程注入 DLL。AutoHotkey 自带消息循环可以接收回调。
 
-回调中不直接读写文件，也不直接切换输入法，以避免 WinEvent 重入和事件乱序。回调仅使用 `PostMessage` 或一次性短 `SetTimer` 把工作放回脚本主线程。
+回调中不直接读写文件，也不直接切换输入法，以避免 WinEvent 重入和事件乱序。回调仅使用 `PostMessage` 或一次性短 `SetTimer` 把工作放回脚本主线程。延迟结束后先比较实际状态；如果 Windows 已经恢复到目标状态，不发送任何切换消息。
 
 切换和采样时会通过 `GetGUIThreadInfo` 重新获取当前焦点控件，因此不会把一个窗口内的不同文本框误当成不同“窗口记录”。
 

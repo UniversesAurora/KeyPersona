@@ -79,6 +79,12 @@ RunSelfTests(baseDir) {
     identityApi := WindowIdentity(testConfig, testLogger)
     window := identityApi.Resolve()
     AssertTest(window.Count > 0, "Foreground window resolution", failures)
+    if window.Count {
+        AssertTest(identityApi.IsIgnored("explorer.exe", "Shell_SecondaryTrayWnd", window["hwnd"]),
+            "Secondary taskbar surface ignored", failures)
+        AssertTest(identityApi.IsIgnored("explorer.exe", "TopLevelWindowForOverflowXamlIsland", window["hwnd"]),
+            "Tray overflow surface ignored", failures)
+    }
     FileAppend("window-ok`n", progressPath, "UTF-8")
     profileApi := InputProfiles(identityApi, testConfig, testLogger)
     AssertTest(profileApi.Catalog.Count >= 2, "Enabled profile discovery", failures)
