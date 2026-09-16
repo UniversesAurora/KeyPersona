@@ -22,6 +22,9 @@ class TrayMenuController {
         tray.Add("启用", ObjBindMethod(this.App, "ToggleEnabled"))
         if this.App.Enabled
             tray.Check("启用")
+        tray.Add("开机自启动", ObjBindMethod(this.App, "ToggleStartup"))
+        if this.App.Startup.IsEnabled()
+            tray.Check("开机自启动")
         tray.Add()
         if window.Count {
             status := "当前：" MapGet(window, "exe", "unknown") " — " this.ShortState(state)
