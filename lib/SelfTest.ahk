@@ -14,6 +14,14 @@ RunSelfTests(baseDir) {
     AssertTest(HasKnownProfile(actual), "Known profile detection", failures)
     AssertTest(!HasKnownProfile(Map("profile", "unknown")), "Plain unknown profile rejection", failures)
     AssertTest(!HasKnownProfile(Map("profile", "0000:unknown")), "Qualified unknown profile rejection", failures)
+    AssertTest(IsChineseLanguageState(Map("langId", "0804")), "Simplified Chinese language detection", failures)
+    AssertTest(!IsChineseLanguageState(Map("langId", "0409")), "Non-Chinese language rejection", failures)
+    chineseProfile := Map("profile", "0804:sample", "langId", "0804")
+    englishProfile := Map("profile", "0409:00000409", "langId", "0409")
+    AssertTest(ShouldReplaceBacktickState(chineseProfile, "1"), "Backtick replacement in Chinese mode", failures)
+    AssertTest(!ShouldReplaceBacktickState(chineseProfile, "0"), "Backtick pass-through in IME English mode", failures)
+    AssertTest(!ShouldReplaceBacktickState(englishProfile, "1"), "Backtick pass-through for non-Chinese input", failures)
+    AssertTest(!ShouldReplaceBacktickState(chineseProfile, "1", false), "Backtick option disables replacement", failures)
     noOpProbe := ImeModeNoOpProbe()
     noOpState := Map("imeOpen", "1", "conversion", "0x1", "sentence", "0x8")
     AssertTest(noOpProbe.Apply(Map(), noOpState) && noOpProbe.SetCalls = 0,
@@ -42,8 +50,10 @@ RunSelfTests(baseDir) {
     FileCopy(baseDir "\config.ini", tempConfigDir "\config.ini", true)
     editableConfig := ImeMemoryConfig(tempConfigDir)
     AssertTest(editableConfig.SetDefaultState("english-us"), "Default state write", failures)
+    AssertTest(editableConfig.SetBacktickInChinese(true), "Backtick option write", failures)
     reloadedConfig := ImeMemoryConfig(tempConfigDir)
     AssertTest(reloadedConfig.DefaultState = "english-us", "Default state reload", failures)
+    AssertTest(reloadedConfig.BacktickInChinese, "Backtick option reload", failures)
     try DirDelete(tempConfigDir, true)
 
     tempState := A_Temp "\ime-memory-state-selftest-" DllCall("kernel32\GetCurrentProcessId", "UInt") ".ini"
@@ -59,10 +69,11 @@ RunSelfTests(baseDir) {
         "profile", "0409:00000409", "imeOpen", "unknown",
         "conversion", "unknown", "sentence", "unknown"
     )
-    storeApi.Upsert(syntheticWindow, learnedState)
+    storeApi.Upsert(syntheticWindow, learnedState, "manual")
     AssertTest(storeApi.Flush(), "State store atomic flush", failures)
     loadedStore := StateStore(tempState, testLogger)
     AssertTest(StateMatches(loadedStore.Find(syntheticWindow), learnedState), "State store round-trip", failures)
+    AssertTest(MapGet(loadedStore.Find(syntheticWindow), "source", "") = "manual", "State source round-trip", failures)
     FileCopy(tempState, tempState ".bak", true)
     FileDelete(tempState)
     FileAppend("[broken`n", tempState, "UTF-8")
@@ -73,12 +84,18 @@ RunSelfTests(baseDir) {
     rulesApi := RuleEngine(testConfig, testLogger)
     terminalWindow := Map("exe", "WindowsTerminal.exe", "path", "WindowsTerminal.exe", "class", "CASCADIA_HOSTING_WINDOW_CLASS", "title", "Terminal")
     terminalRule := rulesApi.Match(terminalWindow)
-    AssertTest(terminalRule.Count && terminalRule["stateName"] = "english-us", "Force rule matching", failures)
+    AssertTest(terminalRule.Count && terminalRule["stateName"] = "english-us", "User rule matching", failures)
     FileAppend("persistence-rules-ok`n", progressPath, "UTF-8")
 
     identityApi := WindowIdentity(testConfig, testLogger)
     window := identityApi.Resolve()
     AssertTest(window.Count > 0, "Foreground window resolution", failures)
+    if window.Count {
+        AssertTest(identityApi.IsIgnored("explorer.exe", "Shell_SecondaryTrayWnd", window["hwnd"]),
+            "Secondary taskbar surface ignored", failures)
+        AssertTest(identityApi.IsIgnored("explorer.exe", "TopLevelWindowForOverflowXamlIsland", window["hwnd"]),
+            "Tray overflow surface ignored", failures)
+    }
     FileAppend("window-ok`n", progressPath, "UTF-8")
     profileApi := InputProfiles(identityApi, testConfig, testLogger)
     AssertTest(profileApi.Catalog.Count >= 2, "Enabled profile discovery", failures)

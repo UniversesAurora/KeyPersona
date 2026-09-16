@@ -6,6 +6,7 @@ class TrayMenuController {
         this.LastFingerprint := ""
         this.StateMenu := ""
         this.DefaultMenu := ""
+        this.BacktickLabel := "中文模式下反引号键输出 " Chr(96)
         this.About := AboutDialog()
         this.LastLeftClick := 0
         this.TrayMessageCallback := ObjBindMethod(this, "OnTrayMessage")
@@ -18,38 +19,47 @@ class TrayMenuController {
         window := this.App.CurrentWindow
         state := this.App.CurrentState
         rule := this.App.CurrentRule
+        if (window.Count && !DllCall("user32\IsWindow", "Ptr", MapGet(window, "hwnd", 0), "Int")) {
+            window := Map()
+            state := Map()
+            rule := Map()
+        }
         fingerprint := this.App.Enabled "|" MapGet(window, "hwnd", 0) "|"
             . StateSignature(state) "|" MapGet(rule, "name", "") "|"
-            . this.App.Config.DefaultState
+            . this.App.CurrentSource "|" this.App.Config.DefaultState "|"
+            . this.App.Config.BacktickInChinese
         if !force && fingerprint = this.LastFingerprint
             return
         this.LastFingerprint := fingerprint
         tray := A_TrayMenu
         tray.Delete()
-        tray.Add("启用", ObjBindMethod(this.App, "ToggleEnabled"))
+        tray.Add("启用自动切换", ObjBindMethod(this.App, "ToggleEnabled"))
         if this.App.Enabled
-            tray.Check("启用")
+            tray.Check("启用自动切换")
         tray.Add("开机自启动", ObjBindMethod(this.App, "ToggleStartup"))
         if this.App.Startup.IsEnabled()
             tray.Check("开机自启动")
         tray.Add()
         if window.Count {
-            status := "当前：" MapGet(window, "exe", "unknown") " — " this.ShortState(state)
+            status := "当前窗口：" MapGet(window, "exe", "未知") " · " this.ShortState(state)
             tray.Add(status, (*) => 0)
             tray.Disable(status)
-            if rule.Count {
-                ruleText := "强制规则：" rule["name"]
-                tray.Add(ruleText, (*) => 0)
-                tray.Disable(ruleText)
-            }
+            identityType := MapGet(window, "mode", "app") = "window" ? "窗口" : "应用"
+            identityId := Fnv1a32(MapGet(window, "identityKey", ""))
+            sourceStatus := "来源：" this.SourceLabel(this.App.CurrentSource, rule)
+                . " · " identityType " ID " identityId
+            tray.Add(sourceStatus, (*) => 0)
+            tray.Disable(sourceStatus)
         } else {
-            tray.Add("当前：无可记录窗口", (*) => 0)
-            tray.Disable("当前：无可记录窗口")
+            tray.Add("当前窗口：无可管理窗口", (*) => 0)
+            tray.Disable("当前窗口：无可管理窗口")
         }
         defaultState := this.App.Config.GetNamedState(this.App.Config.DefaultState)
-        defaultStatus := "全局默认：" this.App.Config.DefaultState
+        defaultStatus := "全局默认："
         if defaultState.Count
-            defaultStatus .= " — " this.ShortState(defaultState)
+            defaultStatus .= this.ShortState(defaultState)
+        else
+            defaultStatus .= "未配置"
         tray.Add(defaultStatus, (*) => 0)
         tray.Disable(defaultStatus)
         this.DefaultMenu := Menu()
@@ -69,22 +79,46 @@ class TrayMenuController {
             tray.Disable("清除当前窗口记录")
         }
         tray.Add()
+        tray.Add(this.BacktickLabel, ObjBindMethod(this.App, "ToggleBacktickInChinese"))
+        if this.App.Config.BacktickInChinese
+            tray.Check(this.BacktickLabel)
+        tray.Add()
         tray.Add("打开配置文件", ObjBindMethod(this, "OpenConfig"))
         tray.Add("打开状态文件", ObjBindMethod(this, "OpenState"))
-        tray.Add("Reload", ObjBindMethod(this.App, "ReloadConfiguration"))
+        tray.Add("重新加载", ObjBindMethod(this.App, "ReloadConfiguration"))
         tray.Add()
         tray.Add("关于 IME Memory", ObjBindMethod(this, "ShowAbout"))
-        tray.Add("Exit", ObjBindMethod(this, "ExitApplication"))
+        tray.Add("退出", ObjBindMethod(this, "ExitApplication"))
     }
 
     StateMenuLabel(stateName, namedState) {
-        label := stateName " — " this.App.Profiles.DisplayName(MapGet(namedState, "profile", "unknown"))
+        if (stateName = "english-us")
+            return "英语（美国）- 美式键盘"
+        if (stateName = "wetype-chinese")
+            return "微信输入法（中文）"
+        if (stateName = "wetype-english")
+            return "微信输入法（英文）"
+        label := this.App.Profiles.DisplayName(MapGet(namedState, "profile", "unknown"))
         open := MapGet(namedState, "imeOpen", "unknown")
         if (open = "1")
             label .= "（中文）"
         else if (open = "0")
             label .= "（英文）"
         return label
+    }
+
+    SourceLabel(source, rule) {
+        if (source = "rule")
+            return "用户规则" (rule.Count ? "（" rule["name"] "）" : "")
+        if (source = "manual")
+            return "手动指定"
+        if (source = "learned")
+            return "自动记忆"
+        if (source = "default")
+            return "全局默认"
+        if (source = "observed")
+            return "仅观察"
+        return "检测中"
     }
 
     ShortState(state) {
@@ -111,7 +145,8 @@ class TrayMenuController {
         if (receiverHwnd != A_ScriptHwnd)
             return
         eventCode := lParam & 0xFFFF
-        if (eventCode != 0x0202 && eventCode != 0x0400 && eventCode != 0x0401)
+        if (eventCode != 0x0202 && eventCode != 0x0205 && eventCode != 0x007B
+            && eventCode != 0x0400 && eventCode != 0x0401)
             return
         now := TickCount64()
         if (now - this.LastLeftClick < 250)
@@ -122,6 +157,7 @@ class TrayMenuController {
     }
 
     ShowMenu(*) {
+        this.Refresh(true)
         A_TrayMenu.Show()
     }
 

@@ -69,6 +69,9 @@ class WindowIdentity {
         if !DllCall("user32\IsWindowVisible", "Ptr", hwnd, "Int")
             return true
         exeLower := StrLower(exe)
+        if (exeLower = "explorer.exe" && RegExMatch(className,
+            "i)^(Progman|WorkerW|Shell_(Secondary)?TrayWnd|TopLevelWindowForOverflowXamlIsland|NotifyIconOverflowWindow|XamlExplorerHostIslandWindow)$"))
+            return true
         for item in this.Config.IgnoreExe {
             if (StrLower(item) = exeLower)
                 return true

@@ -14,6 +14,7 @@ class ImeMemoryConfig {
         this.Doc := IniDocument.Load(this.Path)
         this.Enabled := ParseBool(this.Doc.Get("general", "enabled", "1"), true)
         this.DefaultState := this.Doc.Get("general", "defaultState", "wetype-chinese")
+        this.ForegroundSettleMs := ParseInt(this.Doc.Get("general", "foregroundSettleMs", "80"), 80, 20, 500)
         this.ActivePollMs := ParseInt(this.Doc.Get("general", "activePollMs", "250"), 250, 100, 2000)
         this.IdlePollMs := ParseInt(this.Doc.Get("general", "idlePollMs", "1000"), 1000, 250, 10000)
         this.BurstDurationMs := ParseInt(this.Doc.Get("general", "burstDurationMs", "2000"), 2000, 250, 10000)
@@ -23,7 +24,8 @@ class ImeMemoryConfig {
         this.LogLevel := this.Doc.Get("general", "logLevel", "info")
         this.WindowModeExe := SplitCsv(this.Doc.Get("identity", "windowModeExe", "msedge.exe,chrome.exe,firefox.exe,explorer.exe,zettlr.exe"))
         this.IgnoreExe := SplitCsv(this.Doc.Get("identity", "ignoreExe", "ime-memory.exe,autohotkey64.exe,autohotkey32.exe,textinputhost.exe,searchhost.exe,startmenuexperiencehost.exe"))
-        this.IgnoreClassRegex := this.Doc.Get("identity", "ignoreClassRegex", "i)^(Progman|WorkerW|Shell_TrayWnd|XamlExplorerHostIslandWindow|tooltips_class32|IME)$")
+        this.IgnoreClassRegex := this.Doc.Get("identity", "ignoreClassRegex", "i)^(Progman|WorkerW|Shell_(Secondary)?TrayWnd|TopLevelWindowForOverflowXamlIsland|NotifyIconOverflowWindow|XamlExplorerHostIslandWindow|tooltips_class32|IME)$")
+        this.BacktickInChinese := ParseBool(this.Doc.Get("typing", "backtickInChinese", "0"), false)
         this.NamedStates := this.LoadNamedStates()
         this.RuleSections := this.LoadPrefixedSections("rule.")
     }
@@ -70,14 +72,22 @@ class ImeMemoryConfig {
         return true
     }
 
+    SetBacktickInChinese(enabled) {
+        value := enabled ? "1" : "0"
+        IniWrite(value, this.Path, "typing", "backtickInChinese")
+        this.BacktickInChinese := !!enabled
+        return this.BacktickInChinese
+    }
+
     EnsureDefaultFile() {
         if FileExist(this.Path)
             return
-        template := "; IME Memory 用户配置。修改后从托盘选择 Reload。`n"
+        template := "; IME Memory 用户配置。修改后从托盘选择“重新加载”。`n"
             . "; profile 可从托盘状态或 tools\ime-probe.ahk 的输出中复制。`n`n"
             . "[general]`n"
             . "enabled=1`n"
             . "defaultState=wetype-chinese`n"
+            . "foregroundSettleMs=80`n"
             . "activePollMs=250`n"
             . "idlePollMs=1000`n"
             . "burstDurationMs=2000`n"
@@ -88,7 +98,9 @@ class ImeMemoryConfig {
             . "[identity]`n"
             . "windowModeExe=msedge.exe,chrome.exe,firefox.exe,explorer.exe,zettlr.exe`n"
             . "ignoreExe=ime-memory.exe,autohotkey64.exe,autohotkey32.exe,textinputhost.exe,searchhost.exe,startmenuexperiencehost.exe`n"
-            . "ignoreClassRegex=i)^(Progman|WorkerW|Shell_TrayWnd|XamlExplorerHostIslandWindow|tooltips_class32|IME)$`n`n"
+            . "ignoreClassRegex=i)^(Progman|WorkerW|Shell_(Secondary)?TrayWnd|TopLevelWindowForOverflowXamlIsland|NotifyIconOverflowWindow|XamlExplorerHostIslandWindow|tooltips_class32|IME)$`n`n"
+            . "[typing]`n"
+            . "backtickInChinese=0`n`n"
             . "[state.english-us]`n"
             . "profile=0409:00000409`n"
             . "imeOpen=unknown`n"

@@ -18,6 +18,7 @@ class ImeMemoryApp {
         this.CurrentWindow := Map()
         this.CurrentState := Map()
         this.CurrentRule := Map()
+        this.CurrentSource := ""
         this.SessionStates := Map()
         this.SessionWindows := Map()
         this.LastSamples := Map()
@@ -25,6 +26,9 @@ class ImeMemoryApp {
         this.Suppressions := Map()
         this.DesiredStates := Map()
         this.ApplyGeneration := 0
+        this.ForegroundSequence := 0
+        this.PendingForegroundHwnd := 0
+        this.PendingForegroundDue := 0
         this.BurstUntil := 0
         this.PollPeriod := 0
         this.Started := false
@@ -36,6 +40,7 @@ class ImeMemoryApp {
         this.PollCallback := ObjBindMethod(this, "Poll")
         this.FlushCallback := ObjBindMethod(this, "FlushState")
         this.Hook := ForegroundWinEventHook(this.EventGui.Hwnd, ImeMemoryApp.EVENT_MESSAGE, this.Logger)
+        this.BacktickKey := BacktickKeyController(this)
         this.Tray := TrayMenuController(this)
     }
 
@@ -47,15 +52,47 @@ class ImeMemoryApp {
         this.Tray.Refresh(true)
         if this.Enabled {
             this.SetPollPeriod(this.Config.ActivePollMs)
-            SetTimer(ObjBindMethod(this, "SwitchToForeground"), -20)
+            this.QueueForegroundSwitch()
         }
     }
 
     OnWinEventMessage(wParam, lParam, message, receiverHwnd) {
         if !this.Enabled || this.ShuttingDown
             return 0
-        SetTimer(ObjBindMethod(this, "SwitchToForeground", wParam), -15)
+        this.QueueForegroundSwitch(wParam)
         return 0
+    }
+
+    QueueForegroundSwitch(eventHwnd := 0, delayMs := "") {
+        if !this.Enabled || this.ShuttingDown
+            return
+        if !eventHwnd
+            eventHwnd := DllCall("user32\GetForegroundWindow", "Ptr")
+        if !eventHwnd
+            return
+        if (delayMs = "")
+            delayMs := this.Config.ForegroundSettleMs
+        now := TickCount64()
+        if (this.PendingForegroundHwnd = eventHwnd && now < this.PendingForegroundDue)
+            return
+        this.ForegroundSequence += 1
+        sequence := this.ForegroundSequence
+        this.PendingForegroundHwnd := eventHwnd
+        this.PendingForegroundDue := now + delayMs
+        SetTimer(ObjBindMethod(this, "CommitForegroundSwitch", sequence, eventHwnd), -delayMs)
+    }
+
+    CommitForegroundSwitch(sequence, eventHwnd) {
+        if (sequence != this.ForegroundSequence || !this.Enabled || this.ShuttingDown)
+            return
+        this.PendingForegroundHwnd := 0
+        this.PendingForegroundDue := 0
+        foreground := DllCall("user32\GetForegroundWindow", "Ptr")
+        if (foreground != eventHwnd) {
+            this.QueueForegroundSwitch(foreground)
+            return
+        }
+        this.SwitchToForeground(foreground)
     }
 
     SwitchToForeground(eventHwnd := 0) {
@@ -85,6 +122,7 @@ class ImeMemoryApp {
         this.CurrentWindow := nextWindow
         this.CurrentRule := this.Rules.Match(nextWindow)
         desired := this.SelectDesiredState(nextWindow, this.CurrentRule)
+        this.CurrentSource := MapGet(desired, "source", "")
         this.Logger.Info("Foreground: " nextWindow["exe"] " [" nextWindow["mode"] "]"
             . (this.CurrentRule.Count ? " rule=" this.CurrentRule["name"] : ""))
         this.BeginBurst()
@@ -98,12 +136,17 @@ class ImeMemoryApp {
 
     SelectDesiredState(windowInfo, matchedRule) {
         hwndKey := MapGet(windowInfo, "hwnd", 0) ""
-        if matchedRule.Count
-            return StateClone(matchedRule["state"])
+        if matchedRule.Count {
+            state := StateClone(matchedRule["state"])
+            state["source"] := "rule"
+            return state
+        }
         if this.SessionStates.Has(hwndKey)
             return StateClone(this.SessionStates[hwndKey])
         saved := this.Store.Find(windowInfo)
         if (saved.Count && HasKnownProfile(saved)) {
+            if !saved.Has("source")
+                saved["source"] := "learned"
             this.SessionStates[hwndKey] := StateClone(saved)
             return saved
         }
@@ -114,6 +157,7 @@ class ImeMemoryApp {
             this.Logger.Warn("Unknown defaultState '" this.Config.DefaultState "'; falling back to English US")
             state := this.Config.GetNamedState("english-us")
         }
+        state["source"] := "default"
         this.SessionStates[hwndKey] := StateClone(state)
         return state
     }
@@ -227,7 +271,7 @@ class ImeMemoryApp {
         if !foreground.Count
             return
         if (!this.CurrentWindow.Count || foreground["hwnd"] != this.CurrentWindow["hwnd"]) {
-            this.SwitchToForeground(foreground["hwnd"])
+            this.QueueForegroundSwitch(foreground["hwnd"])
             return
         }
         this.ObserveWindow(this.CurrentWindow, "poll", false)
@@ -249,6 +293,7 @@ class ImeMemoryApp {
             if (!leaving && windowInfo["hwnd"] = MapGet(this.CurrentWindow, "hwnd", 0)) {
                 this.CurrentState := actual
                 this.CurrentRule := this.Rules.Match(windowInfo)
+                this.CurrentSource := "observed"
                 this.Tray.Refresh()
             }
             return
@@ -256,10 +301,11 @@ class ImeMemoryApp {
         matchedRule := this.Rules.Match(windowInfo)
         if matchedRule.Count {
             if (!leaving && !this.ObserveOnly && !StateMatches(actual, matchedRule["state"]))
-                this.ApplyState(windowInfo, matchedRule["state"], "force-rule")
+                this.ApplyState(windowInfo, matchedRule["state"], "user-rule")
             if (!leaving && windowInfo["hwnd"] = MapGet(this.CurrentWindow, "hwnd", 0)) {
                 this.CurrentState := actual
                 this.CurrentRule := matchedRule
+                this.CurrentSource := "rule"
                 this.Tray.Refresh()
             }
             return
@@ -276,15 +322,20 @@ class ImeMemoryApp {
             return
         oldState := this.SessionStates.Has(hwndKey) ? this.SessionStates[hwndKey] : Map()
         changed := !oldState.Count || StateSignature(oldState) != signature
-        this.SessionStates[hwndKey] := StateClone(actual)
         if changed {
-            this.Store.Upsert(windowInfo, actual)
+            actual["source"] := "learned"
+            this.SessionStates[hwndKey] := StateClone(actual)
+            this.Store.Upsert(windowInfo, actual, "learned")
             this.ScheduleFlush()
             this.Logger.Info("Learned " windowInfo["exe"] ": " StateLabel(actual))
+        } else {
+            actual["source"] := MapGet(oldState, "source", "learned")
+            this.SessionStates[hwndKey] := StateClone(actual)
         }
         if (!leaving && windowInfo["hwnd"] = MapGet(this.CurrentWindow, "hwnd", 0)) {
             this.CurrentState := actual
             this.CurrentRule := Map()
+            this.CurrentSource := MapGet(actual, "source", "learned")
             this.Tray.Refresh()
         }
     }
@@ -314,11 +365,14 @@ class ImeMemoryApp {
         if this.Enabled {
             this.Logger.Info("Enabled")
             this.SetPollPeriod(this.Config.ActivePollMs)
-            this.SwitchToForeground()
+            this.QueueForegroundSwitch()
         } else {
             this.Logger.Info("Disabled")
             SetTimer(this.PollCallback, 0)
             this.PollPeriod := 0
+            this.ForegroundSequence += 1
+            this.PendingForegroundHwnd := 0
+            this.PendingForegroundDue := 0
         }
         this.Tray.Refresh(true)
     }
@@ -327,15 +381,17 @@ class ImeMemoryApp {
         if !this.CurrentWindow.Count
             return
         if this.CurrentRule.Count {
-            TrayTip("当前窗口命中了强制规则，不能用自动记忆覆盖。", "IME Memory")
+            TrayTip("当前窗口命中了用户规则，不能用自动记忆覆盖。", "IME Memory")
             return
         }
         state := this.Config.GetNamedState(stateName)
         if !state.Count
             return
+        state["source"] := "manual"
         hwndKey := this.CurrentWindow["hwnd"] ""
         this.SessionStates[hwndKey] := StateClone(state)
-        this.Store.Upsert(this.CurrentWindow, state)
+        this.Store.Upsert(this.CurrentWindow, state, "manual")
+        this.CurrentSource := "manual"
         this.ScheduleFlush()
         this.ApplyState(this.CurrentWindow, state, "tray")
         this.Tray.Refresh(true)
@@ -360,6 +416,14 @@ class ImeMemoryApp {
         this.Tray.Refresh(true)
     }
 
+    ToggleBacktickInChinese(*) {
+        enabled := this.Config.SetBacktickInChinese(!this.Config.BacktickInChinese)
+        this.Logger.Info("Chinese-mode backtick replacement " (enabled ? "enabled" : "disabled"))
+        TrayTip(enabled ? "已开启：中文输入模式下，单独按反引号键将直接输入反引号。"
+            : "已关闭中文模式反引号修正。", "IME Memory", "Mute")
+        this.Tray.Refresh(true)
+    }
+
     ClearCurrentRecord(*) {
         if !this.CurrentWindow.Count
             return
@@ -370,6 +434,7 @@ class ImeMemoryApp {
         this.ScheduleFlush()
         rule := this.Rules.Match(this.CurrentWindow)
         desired := this.SelectDesiredState(this.CurrentWindow, rule)
+        this.CurrentSource := MapGet(desired, "source", "")
         if !this.ObserveOnly
             this.ApplyState(this.CurrentWindow, desired, "clear")
         this.Tray.Refresh(true)
@@ -388,6 +453,7 @@ class ImeMemoryApp {
         try SetTimer(this.FlushCallback, 0)
         try this.Hook.Stop()
         try OnMessage(ImeMemoryApp.EVENT_MESSAGE, this.MessageCallback, 0)
+        try this.BacktickKey.Dispose()
         try this.Tray.Dispose()
         try this.Store.Flush()
         this.Logger.Info("IME Memory stopped")

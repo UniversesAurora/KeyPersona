@@ -19,7 +19,7 @@
 - AutoHotkey `2.0.28` 64 位运行时。
 - 当前启用的输入 profile 只有 English US 与微信输入法。
 - English US：`0409:00000409`。
-- 微信输入法 2.1.4.5：`0804:{86598FB9-66A2-463E-B9C2-AEB906D477AD}{607FDF85-FCC8-4DBD-A365-41296F980C9C}`。
+- 微信输入法 2.1.4.6：`0804:{86598FB9-66A2-463E-B9C2-AEB906D477AD}{607FDF85-FCC8-4DBD-A365-41296F980C9C}`。
 - 微信输入法的 TSF/TIP 模块已启用。
 - 在 Windows Terminal 的实际测试中，`ImmGetContext` 为空，但 `ImmGetDefaultIMEWnd` + `WM_IME_CONTROL` 可以读取 IME 开关和 conversion mode。因此不能只实现常见的 `ImmGetContext` 方案。
 
@@ -64,7 +64,7 @@ sentence=preserve
 3. 以顶层宿主的 PID 调用 `QueryFullProcessImageName`，取完整路径和 exe 名。
 4. 同时保存顶层 window class、标准化后的标题及可选 AUMID/package 信息。
 
-因此不会看到一个 WebView2 子控件就把窗口认成 `msedgewebview2.exe`。本机 Raycast 的实际顶层进程就是 `Raycast.exe`，窗口类为 `HwndWrapper[Raycast;Main;...]`，强制规则直接写 `Raycast.exe` 即可。
+因此不会看到一个 WebView2 子控件就把窗口认成 `msedgewebview2.exe`。本机 Raycast 的实际顶层进程就是 `Raycast.exe`，窗口类为 `HwndWrapper[Raycast;Main;...]`，用户规则直接写 `Raycast.exe` 即可。
 
 ### 3.2 持久身份
 
@@ -86,7 +86,7 @@ Explorer 后续可增加专用 identity provider，用 Shell COM 读取文件夹
 
 ### 3.3 忽略对象
 
-默认忽略程序自己的窗口、桌面、任务切换器、输入法候选框、工具提示、无宿主的临时菜单，以及不应被记忆的系统安全桌面。
+默认忽略程序自己的窗口、桌面、任务切换器、输入法候选框、工具提示、无宿主的临时菜单，以及不应被记忆的系统安全桌面。`Shell_TrayWnd`、`Shell_SecondaryTrayWnd` 和 `TopLevelWindowForOverflowXamlIsland` 等任务栏/托盘表面也会被忽略，因此展开折叠托盘不会把“当前窗口”覆盖成 Explorer；真正的资源管理器 `CabinetWClass` 窗口不受影响。
 
 ## 4. 前台窗口监听
 
@@ -95,7 +95,8 @@ Explorer 后续可增加专用 identity provider，用 Shell COM 读取文件夹
 ```text
 EVENT_SYSTEM_FOREGROUND
   → WinEvent 回调只投递内部消息
-  → 10–30 ms 后重新读取 GetForegroundWindow
+  → 默认等待 80 ms，让 Windows 先完成自己的输入法恢复
+  → 重新读取 GetForegroundWindow 和当前输入法状态
   → 解析宿主身份
   → 按优先级选择目标状态
   → 恢复并异步验证
@@ -103,7 +104,7 @@ EVENT_SYSTEM_FOREGROUND
 
 使用 `WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS`，不向其他进程注入 DLL。AutoHotkey 自带消息循环可以接收回调。
 
-回调中不直接读写文件，也不直接切换输入法，以避免 WinEvent 重入和事件乱序。回调仅使用 `PostMessage` 或一次性短 `SetTimer` 把工作放回脚本主线程。
+回调中不直接读写文件，也不直接切换输入法，以避免 WinEvent 重入和事件乱序。回调仅使用 `PostMessage` 或一次性短 `SetTimer` 把工作放回脚本主线程。延迟结束后先比较实际状态；如果 Windows 已经恢复到目标状态，不发送任何切换消息。
 
 切换和采样时会通过 `GetGUIThreadInfo` 重新获取当前焦点控件，因此不会把一个窗口内的不同文本框误当成不同“窗口记录”。
 
@@ -175,7 +176,7 @@ EVENT_SYSTEM_FOREGROUND
 
 - 与 `desiredState` 相同的变化只算应用成功，不写学习记录。
 - 不同的瞬态变化先忽略，超时后仍不一致才作为失败记录到日志。
-- 强制规则窗口永远不自动学习；如果用户手动改掉，下一次采样会恢复强制状态。
+- 用户规则窗口永远不自动学习；如果用户手动改掉，下一次采样会恢复规则状态。
 
 正常观察期内只有稳定状态变化才写入当前窗口记录，并延迟合并写盘。
 
@@ -183,7 +184,7 @@ EVENT_SYSTEM_FOREGROUND
 
 最终优先级：
 
-1. 第一条匹配的强制规则。
+1. 第一条匹配的用户规则。
 2. 当前会话 HWND 记录。
 3. 按持久 identity 找到的记录。
 4. 全局默认状态。
@@ -235,7 +236,7 @@ state=english-us
 
 最低菜单项：
 
-- Enable / Disable
+- 启用自动切换
 - 开机自启动
 - 当前窗口：exe、身份模式、已观察状态、命中的规则
 - 设置全局默认输入法
@@ -245,9 +246,10 @@ state=english-us
 - 清除当前窗口记录
 - 打开配置文件
 - 打开状态文件
-- Reload
-- About
-- Exit
+- 中文模式反引号修正
+- 重新加载
+- 关于
+- 退出
 
 左右键单击托盘图标都可以打开菜单。菜单操作后立即刷新当前窗口，但不会抢焦点或弹出常驻窗口；“关于”是用户主动打开的临时窗口。
 
@@ -268,6 +270,7 @@ ime-memory/
 │  ├─ WindowIdentity.ahk   # 宿主解析与持久 key
 │  ├─ InputProfiles.ahk    # profile 枚举、TSF/HKL 切换
 │  ├─ ImeMode.ahk          # IME open/conversion 读写
+│  ├─ BacktickKey.ahk      # 中文模式反引号条件热键
 │  ├─ Rules.ahk            # 规则匹配
 │  ├─ StateStore.ahk       # 状态 INI、原子写盘、迁移
 │  ├─ StartupManager.ahk   # 当前用户登录自启动
@@ -302,7 +305,7 @@ ime-memory/
 4. Edge 两个窗口、Explorer、Windows Terminal、Raycast。
 5. 手动 Win+Space、Shift、语言栏点击后自动学习。
 6. 重启脚本和重启 Windows 后恢复。
-7. 强制规则不被用户临时切换覆盖。
+7. 用户规则不被用户临时切换覆盖。
 8. 卡死/无响应窗口不会卡住脚本。
 9. 运行 30 分钟的 CPU、私有内存与句柄数无持续增长。
 10. `.ahk` 直接运行和编译 `.exe` 两种交付方式。

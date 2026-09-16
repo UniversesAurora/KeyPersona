@@ -213,6 +213,14 @@ class InputProfiles {
 
     DisplayName(profileId) {
         key := StrLower(profileId)
-        return this.Catalog.Has(key) ? this.Catalog[key]["description"] : profileId
+        if (key = "0409:00000409")
+            return "英语（美国）- 美式键盘"
+        if this.Catalog.Has(key) {
+            description := this.Catalog[key]["description"]
+            if RegExMatch(description, "i)^WeType$")
+                return "微信输入法"
+            return description
+        }
+        return profileId
     }
 }
