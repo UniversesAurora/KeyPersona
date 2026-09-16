@@ -2,7 +2,7 @@
 
 一个使用 AutoHotkey v2 和原生 Windows API 实现的轻量输入法按窗口记忆工具。
 
-当前版本针对本机的两种输入 profile 做过适配：
+当前版本针对以下两种输入 profile 做过适配：
 
 - English (United States) - US
 - 微信输入法 2.1.4.5
@@ -11,16 +11,16 @@
 
 ## 运行
 
-安装版位于：
+直接运行源码：
+
+```text
+.\ime-memory.ahk
+```
+
+构建后的独立程序位于源码目录的上一级：
 
 ```text
 ..\ime-memory.exe
-```
-
-源码位于：
-
-```text
-.
 ```
 
 编译版包含 AutoHotkey 运行时，目标机器不需要另行安装 AutoHotkey。程序启动后只有托盘图标，没有主窗口。
@@ -33,7 +33,9 @@
 pwsh -NoProfile -File .\build.ps1
 ```
 
-构建脚本会执行源码自检，将独立 EXE 直接输出到 `..\ime-memory.exe`，再做一次只观察烟雾测试。如果安装版原本正在运行，会在构建时短暂停止并在成功或失败后重新启动。安装根目录已有的 `config.ini`、`state.ini` 和日志不会被覆盖。
+源码仓库应位于安装根目录的 `src` 子目录，官方 `Ahk2Exe.exe` 放在同级的 `build-tools` 目录。构建脚本会执行源码自检，将独立 EXE 输出到 `..\ime-memory.exe`，再做一次只观察烟雾测试。如果安装版原本正在运行，会在构建时短暂停止并在成功或失败后重新启动。安装根目录已有的 `config.ini`、`state.ini` 和日志不会被覆盖。
+
+构建脚本会从系统安装目录或 `PATH` 查找 AutoHotkey v2。也可以用环境变量 `IME_MEMORY_AHK_RUNTIME` 指定本机运行时位置；该本地设置不需要写入仓库。
 
 日常修改只提交 commit，不自动发布新版本。正式发布历史见 [CHANGELOG.md](CHANGELOG.md)，发布步骤和约束见 [RELEASING.md](RELEASING.md)。
 
@@ -44,7 +46,7 @@ pwsh -NoProfile -File .\build.ps1
 - Edge、Chrome、Firefox、Explorer 和 Zettlr 使用 `exe + window class + 标准化标题` 作为跨重启身份。
 - 其他应用默认按 exe 记忆。
 
-运行时配置在 `..\config.ini` 中。源码目录里的 [config.ini](config.ini) 是首次安装时使用的默认模板。修改运行时配置后从托盘选择 `Reload`。
+运行时配置位于 `..\config.ini`。源码目录里的 [config.ini](config.ini) 是首次安装时使用的默认模板。修改运行时配置后从托盘选择 `Reload`。
 
 ## 托盘菜单
 
@@ -100,15 +102,15 @@ state=english-us
 只读取当前环境并生成 `tools\ime-probe.txt`：
 
 ```powershell
-& 'AutoHotkey64.exe' '.\tools\ime-probe.ahk'
+& AutoHotkey64.exe '.\tools\ime-probe.ahk'
 ```
 
 静默自测：
 
 ```powershell
-& 'AutoHotkey64.exe' '.\ime-memory.ahk' --self-test
+& AutoHotkey64.exe '.\ime-memory.ahk' --self-test
 # 或测试已编译版本
-.\ime-memory.exe --self-test
+..\ime-memory.exe --self-test
 ```
 
 测试结果写入 `self-test.log`。`--observe-only` 可以启动完整监听但禁止切换和学习，适合排查窗口识别。未处理异常会写入 `fatal-error.log` 后退出，不会反复弹出错误窗口。
