@@ -35,6 +35,8 @@ pwsh -NoProfile -File .\build.ps1
 
 构建脚本会执行源码自检，将独立 EXE 直接输出到 `..\ime-memory.exe`，再做一次只观察烟雾测试。如果安装版原本正在运行，会在构建时短暂停止并在成功或失败后重新启动。安装根目录已有的 `config.ini`、`state.ini` 和日志不会被覆盖。
 
+日常修改只提交 commit，不自动发布新版本。正式发布历史见 [CHANGELOG.md](CHANGELOG.md)，发布步骤和约束见 [RELEASING.md](RELEASING.md)。
+
 ## 默认行为
 
 - 未记录过的窗口使用 `wetype-chinese`，即微信输入法中文模式。
