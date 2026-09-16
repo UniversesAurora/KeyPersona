@@ -19,7 +19,7 @@
 - AutoHotkey `2.0.28` 64 位运行时。
 - 当前启用的输入 profile 只有 English US 与微信输入法。
 - English US：`0409:00000409`。
-- 微信输入法 2.1.4.5：`0804:{86598FB9-66A2-463E-B9C2-AEB906D477AD}{607FDF85-FCC8-4DBD-A365-41296F980C9C}`。
+- 微信输入法 2.1.4.6：`0804:{86598FB9-66A2-463E-B9C2-AEB906D477AD}{607FDF85-FCC8-4DBD-A365-41296F980C9C}`。
 - 微信输入法的 TSF/TIP 模块已启用。
 - 在 Windows Terminal 的实际测试中，`ImmGetContext` 为空，但 `ImmGetDefaultIMEWnd` + `WM_IME_CONTROL` 可以读取 IME 开关和 conversion mode。因此不能只实现常见的 `ImmGetContext` 方案。
 
@@ -64,7 +64,7 @@ sentence=preserve
 3. 以顶层宿主的 PID 调用 `QueryFullProcessImageName`，取完整路径和 exe 名。
 4. 同时保存顶层 window class、标准化后的标题及可选 AUMID/package 信息。
 
-因此不会看到一个 WebView2 子控件就把窗口认成 `msedgewebview2.exe`。本机 Raycast 的实际顶层进程就是 `Raycast.exe`，窗口类为 `HwndWrapper[Raycast;Main;...]`，强制规则直接写 `Raycast.exe` 即可。
+因此不会看到一个 WebView2 子控件就把窗口认成 `msedgewebview2.exe`。本机 Raycast 的实际顶层进程就是 `Raycast.exe`，窗口类为 `HwndWrapper[Raycast;Main;...]`，用户规则直接写 `Raycast.exe` 即可。
 
 ### 3.2 持久身份
 
@@ -176,7 +176,7 @@ EVENT_SYSTEM_FOREGROUND
 
 - 与 `desiredState` 相同的变化只算应用成功，不写学习记录。
 - 不同的瞬态变化先忽略，超时后仍不一致才作为失败记录到日志。
-- 强制规则窗口永远不自动学习；如果用户手动改掉，下一次采样会恢复强制状态。
+- 用户规则窗口永远不自动学习；如果用户手动改掉，下一次采样会恢复规则状态。
 
 正常观察期内只有稳定状态变化才写入当前窗口记录，并延迟合并写盘。
 
@@ -184,7 +184,7 @@ EVENT_SYSTEM_FOREGROUND
 
 最终优先级：
 
-1. 第一条匹配的强制规则。
+1. 第一条匹配的用户规则。
 2. 当前会话 HWND 记录。
 3. 按持久 identity 找到的记录。
 4. 全局默认状态。
@@ -236,7 +236,7 @@ state=english-us
 
 最低菜单项：
 
-- Enable / Disable
+- 启用自动切换
 - 开机自启动
 - 当前窗口：exe、身份模式、已观察状态、命中的规则
 - 设置全局默认输入法
@@ -303,7 +303,7 @@ ime-memory/
 4. Edge 两个窗口、Explorer、Windows Terminal、Raycast。
 5. 手动 Win+Space、Shift、语言栏点击后自动学习。
 6. 重启脚本和重启 Windows 后恢复。
-7. 强制规则不被用户临时切换覆盖。
+7. 用户规则不被用户临时切换覆盖。
 8. 卡死/无响应窗口不会卡住脚本。
 9. 运行 30 分钟的 CPU、私有内存与句柄数无持续增长。
 10. `.ahk` 直接运行和编译 `.exe` 两种交付方式。

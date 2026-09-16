@@ -59,10 +59,11 @@ RunSelfTests(baseDir) {
         "profile", "0409:00000409", "imeOpen", "unknown",
         "conversion", "unknown", "sentence", "unknown"
     )
-    storeApi.Upsert(syntheticWindow, learnedState)
+    storeApi.Upsert(syntheticWindow, learnedState, "manual")
     AssertTest(storeApi.Flush(), "State store atomic flush", failures)
     loadedStore := StateStore(tempState, testLogger)
     AssertTest(StateMatches(loadedStore.Find(syntheticWindow), learnedState), "State store round-trip", failures)
+    AssertTest(MapGet(loadedStore.Find(syntheticWindow), "source", "") = "manual", "State source round-trip", failures)
     FileCopy(tempState, tempState ".bak", true)
     FileDelete(tempState)
     FileAppend("[broken`n", tempState, "UTF-8")
@@ -73,7 +74,7 @@ RunSelfTests(baseDir) {
     rulesApi := RuleEngine(testConfig, testLogger)
     terminalWindow := Map("exe", "WindowsTerminal.exe", "path", "WindowsTerminal.exe", "class", "CASCADIA_HOSTING_WINDOW_CLASS", "title", "Terminal")
     terminalRule := rulesApi.Match(terminalWindow)
-    AssertTest(terminalRule.Count && terminalRule["stateName"] = "english-us", "Force rule matching", failures)
+    AssertTest(terminalRule.Count && terminalRule["stateName"] = "english-us", "User rule matching", failures)
     FileAppend("persistence-rules-ok`n", progressPath, "UTF-8")
 
     identityApi := WindowIdentity(testConfig, testLogger)

@@ -4,8 +4,8 @@
 
 当前版本针对以下两种输入 profile 做过适配：
 
-- English (United States) - US
-- 微信输入法 2.1.4.5
+- 英语（美国）- 美式键盘
+- 微信输入法 2.1.4.6
 
 它会监听前台窗口变化，恢复该窗口上一次使用的输入 profile 和可读写的 IME 内部中/英文状态，并将学习结果持久化到 `state.ini`。
 
@@ -42,17 +42,17 @@ pwsh -NoProfile -File .\build.ps1
 ## 默认行为
 
 - 未记录过的窗口使用 `wetype-chinese`，即微信输入法中文模式。
-- Windows Terminal、经典 `powershell.exe` 和 Raycast 强制使用 English US。
+- Windows Terminal、经典 `powershell.exe` 和 Raycast 通过用户规则使用英语（美国）。
 - Edge、Chrome、Firefox、Explorer 和 Zettlr 使用 `exe + window class + 标准化标题` 作为跨重启身份。
 - 其他应用默认按 exe 记忆。
 
-运行时配置位于 `..\config.ini`。源码目录里的 [config.ini](config.ini) 是首次安装时使用的默认模板。修改运行时配置后从托盘选择 `Reload`。
+运行时配置位于 `..\config.ini`。源码目录里的 [config.ini](config.ini) 是首次安装时使用的默认模板。修改运行时配置后从托盘选择“重新加载”。
 
 ## 托盘菜单
 
 - 启用/停用
 - 开启或关闭当前用户的开机自启动
-- 查看当前窗口和输入法状态
+- 查看当前窗口、输入法状态、状态来源和短 ID
 - 设置全局默认输入法
 - 把当前窗口设置为任一已定义状态
 - 清除当前窗口记录
@@ -63,7 +63,9 @@ pwsh -NoProfile -File .\build.ps1
 
 托盘图标支持鼠标左键或右键单击打开菜单。
 
-命中强制规则的窗口不能被“设置当前窗口为”覆盖；应修改对应 `[rule.*]`。
+状态来源会明确显示为“用户规则”“手动指定”“自动记忆”或“全局默认”。菜单里的应用/窗口 ID 是持久身份键的短哈希，便于和 `state.ini` 对照，但不会暴露完整路径或标题。
+
+命中用户规则的窗口不能被“设置当前窗口为”覆盖；应修改对应 `[rule.*]`。
 
 ## 开机自启动
 
@@ -83,7 +85,7 @@ conversion=preserve
 sentence=preserve
 ```
 
-强制规则：
+用户规则：
 
 ```ini
 [rule.raycast]
@@ -101,7 +103,7 @@ state=english-us
 
 - 输入 profile：目标焦点线程的 `GetKeyboardLayout`，结合 TSF active profile 和当前用户已启用的 profile 列表。
 - IME 内部状态：`ImmGetDefaultIMEWnd` + `WM_IME_CONTROL`。
-- 前台窗口：`SetWinEventHook(EVENT_SYSTEM_FOREGROUND)`。
+- 前台窗口：`SetWinEventHook(EVENT_SYSTEM_FOREGROUND)`；事件发生后默认等待 80 ms，让 Windows 先完成自己的输入法恢复，再回读并仅在不一致时补偿。
 - 手动切换：窗口事件触发后的 250 ms 短时采样，稳定后降为 1000 ms。
 
 程序主动恢复时会短暂暂停学习，回读验证后才重新接受用户状态，避免把自己的切换写回并形成循环。

@@ -46,6 +46,7 @@ class StateStore {
                 "imeOpen", MapGet(values, "imeOpen", "unknown"),
                 "conversion", MapGet(values, "conversion", "unknown"),
                 "sentence", MapGet(values, "sentence", "unknown"),
+                "source", MapGet(values, "source", "learned"),
                 "lastSeen", MapGet(values, "lastSeen", "")
             )
             this.Records[identityKey] := record
@@ -61,7 +62,7 @@ class StateStore {
         return this.StateFromRecord(this.Records[key])
     }
 
-    Upsert(windowInfo, state) {
+    Upsert(windowInfo, state, source := "learned") {
         key := MapGet(windowInfo, "identityKey", "")
         if (key = "")
             return false
@@ -76,13 +77,15 @@ class StateStore {
             "imeOpen", MapGet(state, "imeOpen", "unknown"),
             "conversion", MapGet(state, "conversion", "unknown"),
             "sentence", MapGet(state, "sentence", "unknown"),
+            "source", source,
             "lastSeen", FormatTime(, "yyyy-MM-dd HH:mm:ss")
         )
         oldSignature := this.Records.Has(key) ? StateSignature(this.StateFromRecord(this.Records[key])) : ""
+        oldSource := this.Records.Has(key) ? MapGet(this.Records[key], "source", "learned") : ""
         newSignature := StateSignature(state)
         this.Records[key] := record
         this.Dirty := true
-        return oldSignature != newSignature
+        return oldSignature != newSignature || oldSource != source
     }
 
     Remove(windowInfo) {
@@ -100,7 +103,8 @@ class StateStore {
             "profile", MapGet(record, "profile", "unknown"),
             "imeOpen", MapGet(record, "imeOpen", "unknown"),
             "conversion", MapGet(record, "conversion", "unknown"),
-            "sentence", MapGet(record, "sentence", "unknown")
+            "sentence", MapGet(record, "sentence", "unknown"),
+            "source", MapGet(record, "source", "learned")
         )
     }
 
@@ -134,7 +138,7 @@ class StateStore {
     Serialize() {
         text := "; Managed by IME Memory. Edit config.ini, not this file, while the app is running.`n"
             . "[meta]`n"
-            . "schemaVersion=1`n"
+            . "schemaVersion=2`n"
             . "updatedAt=" FormatTime(, "yyyy-MM-dd HH:mm:ss") "`n`n"
         for identityKey, record in this.Records {
             text .= "[window." Fnv1a32(identityKey) "]`n"
@@ -148,6 +152,7 @@ class StateStore {
             text .= "imeOpen=" MapGet(record, "imeOpen", "unknown") "`n"
             text .= "conversion=" MapGet(record, "conversion", "unknown") "`n"
             text .= "sentence=" MapGet(record, "sentence", "unknown") "`n"
+            text .= "source=" MapGet(record, "source", "learned") "`n"
             text .= "lastSeen=" MapGet(record, "lastSeen", "") "`n`n"
         }
         return text

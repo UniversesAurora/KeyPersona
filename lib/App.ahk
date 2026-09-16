@@ -18,6 +18,7 @@ class ImeMemoryApp {
         this.CurrentWindow := Map()
         this.CurrentState := Map()
         this.CurrentRule := Map()
+        this.CurrentSource := ""
         this.SessionStates := Map()
         this.SessionWindows := Map()
         this.LastSamples := Map()
@@ -120,6 +121,7 @@ class ImeMemoryApp {
         this.CurrentWindow := nextWindow
         this.CurrentRule := this.Rules.Match(nextWindow)
         desired := this.SelectDesiredState(nextWindow, this.CurrentRule)
+        this.CurrentSource := MapGet(desired, "source", "")
         this.Logger.Info("Foreground: " nextWindow["exe"] " [" nextWindow["mode"] "]"
             . (this.CurrentRule.Count ? " rule=" this.CurrentRule["name"] : ""))
         this.BeginBurst()
@@ -133,12 +135,17 @@ class ImeMemoryApp {
 
     SelectDesiredState(windowInfo, matchedRule) {
         hwndKey := MapGet(windowInfo, "hwnd", 0) ""
-        if matchedRule.Count
-            return StateClone(matchedRule["state"])
+        if matchedRule.Count {
+            state := StateClone(matchedRule["state"])
+            state["source"] := "rule"
+            return state
+        }
         if this.SessionStates.Has(hwndKey)
             return StateClone(this.SessionStates[hwndKey])
         saved := this.Store.Find(windowInfo)
         if (saved.Count && HasKnownProfile(saved)) {
+            if !saved.Has("source")
+                saved["source"] := "learned"
             this.SessionStates[hwndKey] := StateClone(saved)
             return saved
         }
@@ -149,6 +156,7 @@ class ImeMemoryApp {
             this.Logger.Warn("Unknown defaultState '" this.Config.DefaultState "'; falling back to English US")
             state := this.Config.GetNamedState("english-us")
         }
+        state["source"] := "default"
         this.SessionStates[hwndKey] := StateClone(state)
         return state
     }
@@ -284,6 +292,7 @@ class ImeMemoryApp {
             if (!leaving && windowInfo["hwnd"] = MapGet(this.CurrentWindow, "hwnd", 0)) {
                 this.CurrentState := actual
                 this.CurrentRule := this.Rules.Match(windowInfo)
+                this.CurrentSource := "observed"
                 this.Tray.Refresh()
             }
             return
@@ -291,10 +300,11 @@ class ImeMemoryApp {
         matchedRule := this.Rules.Match(windowInfo)
         if matchedRule.Count {
             if (!leaving && !this.ObserveOnly && !StateMatches(actual, matchedRule["state"]))
-                this.ApplyState(windowInfo, matchedRule["state"], "force-rule")
+                this.ApplyState(windowInfo, matchedRule["state"], "user-rule")
             if (!leaving && windowInfo["hwnd"] = MapGet(this.CurrentWindow, "hwnd", 0)) {
                 this.CurrentState := actual
                 this.CurrentRule := matchedRule
+                this.CurrentSource := "rule"
                 this.Tray.Refresh()
             }
             return
@@ -311,15 +321,20 @@ class ImeMemoryApp {
             return
         oldState := this.SessionStates.Has(hwndKey) ? this.SessionStates[hwndKey] : Map()
         changed := !oldState.Count || StateSignature(oldState) != signature
-        this.SessionStates[hwndKey] := StateClone(actual)
         if changed {
-            this.Store.Upsert(windowInfo, actual)
+            actual["source"] := "learned"
+            this.SessionStates[hwndKey] := StateClone(actual)
+            this.Store.Upsert(windowInfo, actual, "learned")
             this.ScheduleFlush()
             this.Logger.Info("Learned " windowInfo["exe"] ": " StateLabel(actual))
+        } else {
+            actual["source"] := MapGet(oldState, "source", "learned")
+            this.SessionStates[hwndKey] := StateClone(actual)
         }
         if (!leaving && windowInfo["hwnd"] = MapGet(this.CurrentWindow, "hwnd", 0)) {
             this.CurrentState := actual
             this.CurrentRule := Map()
+            this.CurrentSource := MapGet(actual, "source", "learned")
             this.Tray.Refresh()
         }
     }
@@ -365,15 +380,17 @@ class ImeMemoryApp {
         if !this.CurrentWindow.Count
             return
         if this.CurrentRule.Count {
-            TrayTip("当前窗口命中了强制规则，不能用自动记忆覆盖。", "IME Memory")
+            TrayTip("当前窗口命中了用户规则，不能用自动记忆覆盖。", "IME Memory")
             return
         }
         state := this.Config.GetNamedState(stateName)
         if !state.Count
             return
+        state["source"] := "manual"
         hwndKey := this.CurrentWindow["hwnd"] ""
         this.SessionStates[hwndKey] := StateClone(state)
-        this.Store.Upsert(this.CurrentWindow, state)
+        this.Store.Upsert(this.CurrentWindow, state, "manual")
+        this.CurrentSource := "manual"
         this.ScheduleFlush()
         this.ApplyState(this.CurrentWindow, state, "tray")
         this.Tray.Refresh(true)
@@ -408,6 +425,7 @@ class ImeMemoryApp {
         this.ScheduleFlush()
         rule := this.Rules.Match(this.CurrentWindow)
         desired := this.SelectDesiredState(this.CurrentWindow, rule)
+        this.CurrentSource := MapGet(desired, "source", "")
         if !this.ObserveOnly
             this.ApplyState(this.CurrentWindow, desired, "clear")
         this.Tray.Refresh(true)
