@@ -31,6 +31,14 @@ class ImeMode {
         )
     }
 
+    ReadOpenStatus(windowInfo, timeoutMs := 30) {
+        imeWindow := this.GetImeWindow(windowInfo)
+        if !imeWindow
+            return "unknown"
+        open := this.Control(imeWindow, ImeMode.IMC_GETOPENSTATUS, 0, timeoutMs)
+        return open["ok"] ? (open["value"] ? "1" : "0") : "unknown"
+    }
+
     Apply(windowInfo, desiredState) {
         imeWindow := this.GetImeWindow(windowInfo)
         if !imeWindow
@@ -74,8 +82,10 @@ class ImeMode {
         return imeWindow
     }
 
-    Control(imeWindow, command, value) {
+    Control(imeWindow, command, value, timeoutMs := "") {
         result := 0
+        if (timeoutMs = "")
+            timeoutMs := this.Config.MessageTimeoutMs
         DllCall("kernel32\SetLastError", "UInt", 0)
         ok := DllCall("user32\SendMessageTimeoutW",
             "Ptr", imeWindow,
@@ -83,7 +93,7 @@ class ImeMode {
             "Ptr", command,
             "Ptr", value,
             "UInt", 0x2,
-            "UInt", this.Config.MessageTimeoutMs,
+            "UInt", timeoutMs,
             "Ptr*", &result,
             "Ptr")
         return Map("ok", !!ok, "value", result, "error", A_LastError)

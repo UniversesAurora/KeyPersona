@@ -40,6 +40,7 @@ class ImeMemoryApp {
         this.PollCallback := ObjBindMethod(this, "Poll")
         this.FlushCallback := ObjBindMethod(this, "FlushState")
         this.Hook := ForegroundWinEventHook(this.EventGui.Hwnd, ImeMemoryApp.EVENT_MESSAGE, this.Logger)
+        this.BacktickKey := BacktickKeyController(this)
         this.Tray := TrayMenuController(this)
     }
 
@@ -415,6 +416,14 @@ class ImeMemoryApp {
         this.Tray.Refresh(true)
     }
 
+    ToggleBacktickInChinese(*) {
+        enabled := this.Config.SetBacktickInChinese(!this.Config.BacktickInChinese)
+        this.Logger.Info("Chinese-mode backtick replacement " (enabled ? "enabled" : "disabled"))
+        TrayTip(enabled ? "已开启：中文输入模式下，单独按反引号键将直接输入反引号。"
+            : "已关闭中文模式反引号修正。", "IME Memory", "Mute")
+        this.Tray.Refresh(true)
+    }
+
     ClearCurrentRecord(*) {
         if !this.CurrentWindow.Count
             return
@@ -444,6 +453,7 @@ class ImeMemoryApp {
         try SetTimer(this.FlushCallback, 0)
         try this.Hook.Stop()
         try OnMessage(ImeMemoryApp.EVENT_MESSAGE, this.MessageCallback, 0)
+        try this.BacktickKey.Dispose()
         try this.Tray.Dispose()
         try this.Store.Flush()
         this.Logger.Info("IME Memory stopped")

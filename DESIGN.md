@@ -246,9 +246,10 @@ state=english-us
 - 清除当前窗口记录
 - 打开配置文件
 - 打开状态文件
-- Reload
-- About
-- Exit
+- 中文模式反引号修正
+- 重新加载
+- 关于
+- 退出
 
 左右键单击托盘图标都可以打开菜单。菜单操作后立即刷新当前窗口，但不会抢焦点或弹出常驻窗口；“关于”是用户主动打开的临时窗口。
 
@@ -269,6 +270,7 @@ ime-memory/
 │  ├─ WindowIdentity.ahk   # 宿主解析与持久 key
 │  ├─ InputProfiles.ahk    # profile 枚举、TSF/HKL 切换
 │  ├─ ImeMode.ahk          # IME open/conversion 读写
+│  ├─ BacktickKey.ahk      # 中文模式反引号条件热键
 │  ├─ Rules.ahk            # 规则匹配
 │  ├─ StateStore.ahk       # 状态 INI、原子写盘、迁移
 │  ├─ StartupManager.ahk   # 当前用户登录自启动

@@ -57,9 +57,10 @@ pwsh -NoProfile -File .\build.ps1
 - 把当前窗口设置为任一已定义状态
 - 清除当前窗口记录
 - 打开配置文件或状态文件
-- Reload
+- 可选开启“中文模式下反引号键输出反引号”
+- 重新加载
 - 查看带程序图标和版本号的“关于”窗口
-- Exit
+- 退出
 
 托盘图标支持鼠标左键或右键单击打开菜单。
 
@@ -98,6 +99,15 @@ state=english-us
 规则还可以使用 `pathRegex`、`classRegex` 和 `titleRegex`。同一规则内填写的条件全部需要匹配。
 
 把某个 exe 加入 `[identity]` 的 `windowModeExe`，即可让同一应用的不同窗口分别记忆。否则按应用 exe 共享状态。
+
+反引号修正默认关闭，也可以直接配置：
+
+```ini
+[typing]
+backtickInChinese=1
+```
+
+开启后，仅当当前输入语言属于中文且 IME 处于中文模式时，单独按物理反引号键才会直接发送一个 Unicode `` ` ``。Ctrl、Alt、Win、Shift 与该键组成的组合键完全保留原行为；实现不会先输入 `·` 再删除。
 
 ## 状态检测方式
 

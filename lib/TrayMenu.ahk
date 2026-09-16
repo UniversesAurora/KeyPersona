@@ -6,6 +6,7 @@ class TrayMenuController {
         this.LastFingerprint := ""
         this.StateMenu := ""
         this.DefaultMenu := ""
+        this.BacktickLabel := "中文模式下反引号键输出 " Chr(96)
         this.About := AboutDialog()
         this.LastLeftClick := 0
         this.TrayMessageCallback := ObjBindMethod(this, "OnTrayMessage")
@@ -78,12 +79,16 @@ class TrayMenuController {
             tray.Disable("清除当前窗口记录")
         }
         tray.Add()
+        tray.Add(this.BacktickLabel, ObjBindMethod(this.App, "ToggleBacktickInChinese"))
+        if this.App.Config.BacktickInChinese
+            tray.Check(this.BacktickLabel)
+        tray.Add()
         tray.Add("打开配置文件", ObjBindMethod(this, "OpenConfig"))
         tray.Add("打开状态文件", ObjBindMethod(this, "OpenState"))
-        tray.Add("Reload", ObjBindMethod(this.App, "ReloadConfiguration"))
+        tray.Add("重新加载", ObjBindMethod(this.App, "ReloadConfiguration"))
         tray.Add()
         tray.Add("关于 IME Memory", ObjBindMethod(this, "ShowAbout"))
-        tray.Add("Exit", ObjBindMethod(this, "ExitApplication"))
+        tray.Add("退出", ObjBindMethod(this, "ExitApplication"))
     }
 
     StateMenuLabel(stateName, namedState) {

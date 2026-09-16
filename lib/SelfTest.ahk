@@ -14,6 +14,14 @@ RunSelfTests(baseDir) {
     AssertTest(HasKnownProfile(actual), "Known profile detection", failures)
     AssertTest(!HasKnownProfile(Map("profile", "unknown")), "Plain unknown profile rejection", failures)
     AssertTest(!HasKnownProfile(Map("profile", "0000:unknown")), "Qualified unknown profile rejection", failures)
+    AssertTest(IsChineseLanguageState(Map("langId", "0804")), "Simplified Chinese language detection", failures)
+    AssertTest(!IsChineseLanguageState(Map("langId", "0409")), "Non-Chinese language rejection", failures)
+    chineseProfile := Map("profile", "0804:sample", "langId", "0804")
+    englishProfile := Map("profile", "0409:00000409", "langId", "0409")
+    AssertTest(ShouldReplaceBacktickState(chineseProfile, "1"), "Backtick replacement in Chinese mode", failures)
+    AssertTest(!ShouldReplaceBacktickState(chineseProfile, "0"), "Backtick pass-through in IME English mode", failures)
+    AssertTest(!ShouldReplaceBacktickState(englishProfile, "1"), "Backtick pass-through for non-Chinese input", failures)
+    AssertTest(!ShouldReplaceBacktickState(chineseProfile, "1", false), "Backtick option disables replacement", failures)
     noOpProbe := ImeModeNoOpProbe()
     noOpState := Map("imeOpen", "1", "conversion", "0x1", "sentence", "0x8")
     AssertTest(noOpProbe.Apply(Map(), noOpState) && noOpProbe.SetCalls = 0,
@@ -42,8 +50,10 @@ RunSelfTests(baseDir) {
     FileCopy(baseDir "\config.ini", tempConfigDir "\config.ini", true)
     editableConfig := ImeMemoryConfig(tempConfigDir)
     AssertTest(editableConfig.SetDefaultState("english-us"), "Default state write", failures)
+    AssertTest(editableConfig.SetBacktickInChinese(true), "Backtick option write", failures)
     reloadedConfig := ImeMemoryConfig(tempConfigDir)
     AssertTest(reloadedConfig.DefaultState = "english-us", "Default state reload", failures)
+    AssertTest(reloadedConfig.BacktickInChinese, "Backtick option reload", failures)
     try DirDelete(tempConfigDir, true)
 
     tempState := A_Temp "\ime-memory-state-selftest-" DllCall("kernel32\GetCurrentProcessId", "UInt") ".ini"

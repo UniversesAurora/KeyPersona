@@ -136,6 +136,21 @@ HasKnownProfile(state) {
     return profile != "" && profile != "unknown" && !RegExMatch(profile, ":unknown$")
 }
 
+IsChineseLanguageState(state) {
+    langId := Trim(MapGet(state, "langId", "") "")
+    if (langId = "" && RegExMatch(MapGet(state, "profile", "") "", "i)^([0-9a-f]{4}):", &match))
+        langId := match[1]
+    if !RegExMatch(langId, "i)^[0-9a-f]{4}$")
+        return false
+    try return (Integer("0x" langId) & 0x03FF) = 0x0004
+    return false
+}
+
+ShouldReplaceBacktickState(profileState, imeOpen, optionEnabled := true, appEnabled := true) {
+    return optionEnabled && appEnabled && HasKnownProfile(profileState)
+        && IsChineseLanguageState(profileState) && (imeOpen = "1")
+}
+
 StateLabel(state) {
     if !IsObject(state)
         return "unknown"
