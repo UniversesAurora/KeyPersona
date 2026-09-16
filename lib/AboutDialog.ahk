@@ -32,14 +32,16 @@ class AboutDialog {
         panel.SetFont("s10 norm", "Microsoft YaHei UI")
         panel.AddText("x20 y158 w260 Center", "按窗口记忆并自动恢复输入法状态")
         panel.SetFont("s9 norm", "Segoe UI")
-        panel.AddText("x20 y184 w260 Center c687582", "AutoHotkey v2 · Windows API")
+        panel.AddText("x20 y182 w260 Center c687582", "基于 AutoHotkey v2")
+        panel.SetFont("s9 norm", "Microsoft YaHei UI")
+        panel.AddText("x20 y202 w260 Center c687582", "作者：浮枕 @universesaurora")
 
-        closeButton := panel.AddButton("x105 y220 w90 h28 Default", "确定")
+        closeButton := panel.AddButton("x105 y232 w90 h28 Default", "确定")
         closeButton.OnEvent("Click", ObjBindMethod(this, "CloseFromButton"))
         panel.OnEvent("Escape", ObjBindMethod(this, "CloseGui"))
         panel.OnEvent("Close", ObjBindMethod(this, "CloseGui"))
         this.Window := panel
-        panel.Show("w300 h266 Center")
+        panel.Show("w300 h278 Center")
     }
 
     CloseFromButton(control, *) {
@@ -56,4 +58,3 @@ class AboutDialog {
             this.CloseGui(this.Window)
     }
 }
-
