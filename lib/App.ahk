@@ -45,6 +45,9 @@ class ImeMemoryApp {
     }
 
     Start() {
+        try this.Startup.MigrateLegacy()
+        catch Error as migrationError
+            this.Logger.Error("Startup migration failed: " migrationError.Message)
         OnMessage(ImeMemoryApp.EVENT_MESSAGE, this.MessageCallback)
         this.Hook.Start()
         this.Started := true
