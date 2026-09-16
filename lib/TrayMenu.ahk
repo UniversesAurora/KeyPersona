@@ -5,6 +5,11 @@ class TrayMenuController {
         this.App := app
         this.LastFingerprint := ""
         this.StateMenu := ""
+        this.DefaultMenu := ""
+        this.LastLeftClick := 0
+        this.TrayMessageCallback := ObjBindMethod(this, "OnTrayMessage")
+        this.ShowMenuCallback := ObjBindMethod(this, "ShowMenu")
+        OnMessage(0x0404, this.TrayMessageCallback)
         A_IconTip := "IME Memory"
     }
 
@@ -13,7 +18,8 @@ class TrayMenuController {
         state := this.App.CurrentState
         rule := this.App.CurrentRule
         fingerprint := this.App.Enabled "|" MapGet(window, "hwnd", 0) "|"
-            . StateSignature(state) "|" MapGet(rule, "name", "")
+            . StateSignature(state) "|" MapGet(rule, "name", "") "|"
+            . this.App.Config.DefaultState
         if !force && fingerprint = this.LastFingerprint
             return
         this.LastFingerprint := fingerprint
@@ -39,16 +45,22 @@ class TrayMenuController {
             tray.Add("当前：无可记录窗口", (*) => 0)
             tray.Disable("当前：无可记录窗口")
         }
+        defaultState := this.App.Config.GetNamedState(this.App.Config.DefaultState)
+        defaultStatus := "全局默认：" this.App.Config.DefaultState
+        if defaultState.Count
+            defaultStatus .= " — " this.ShortState(defaultState)
+        tray.Add(defaultStatus, (*) => 0)
+        tray.Disable(defaultStatus)
+        this.DefaultMenu := Menu()
         this.StateMenu := Menu()
         for stateName, namedState in this.App.Config.NamedStates {
-            label := stateName " — " this.App.Profiles.DisplayName(MapGet(namedState, "profile", "unknown"))
-            open := MapGet(namedState, "imeOpen", "unknown")
-            if (open = "1")
-                label .= "（中文）"
-            else if (open = "0")
-                label .= "（英文）"
+            label := this.StateMenuLabel(stateName, namedState)
+            this.DefaultMenu.Add(label, ObjBindMethod(this, "SetDefaultState", stateName))
+            if (stateName = this.App.Config.DefaultState)
+                this.DefaultMenu.Check(label)
             this.StateMenu.Add(label, ObjBindMethod(this, "SetState", stateName))
         }
+        tray.Add("全局默认输入法", this.DefaultMenu)
         tray.Add("设置当前窗口为", this.StateMenu)
         tray.Add("清除当前窗口记录", ObjBindMethod(this.App, "ClearCurrentRecord"))
         if !window.Count {
@@ -61,7 +73,16 @@ class TrayMenuController {
         tray.Add("Reload", ObjBindMethod(this.App, "ReloadConfiguration"))
         tray.Add()
         tray.Add("Exit", ObjBindMethod(this, "ExitApplication"))
-        tray.Default := "打开配置文件"
+    }
+
+    StateMenuLabel(stateName, namedState) {
+        label := stateName " — " this.App.Profiles.DisplayName(MapGet(namedState, "profile", "unknown"))
+        open := MapGet(namedState, "imeOpen", "unknown")
+        if (open = "1")
+            label .= "（中文）"
+        else if (open = "0")
+            label .= "（英文）"
+        return label
     }
 
     ShortState(state) {
@@ -80,6 +101,28 @@ class TrayMenuController {
         this.App.SetCurrentState(stateName)
     }
 
+    SetDefaultState(stateName, *) {
+        this.App.SetDefaultState(stateName)
+    }
+
+    OnTrayMessage(wParam, lParam, message, receiverHwnd) {
+        if (receiverHwnd != A_ScriptHwnd)
+            return
+        eventCode := lParam & 0xFFFF
+        if (eventCode != 0x0202 && eventCode != 0x0400 && eventCode != 0x0401)
+            return
+        now := TickCount64()
+        if (now - this.LastLeftClick < 250)
+            return 0
+        this.LastLeftClick := now
+        SetTimer(this.ShowMenuCallback, -10)
+        return 0
+    }
+
+    ShowMenu(*) {
+        A_TrayMenu.Show()
+    }
+
     OpenConfig(*) {
         Run(this.App.Config.Path)
     }
@@ -94,5 +137,10 @@ class TrayMenuController {
 
     ExitApplication(*) {
         ExitApp()
+    }
+
+    Dispose() {
+        try OnMessage(0x0404, this.TrayMessageCallback, 0)
+        try SetTimer(this.ShowMenuCallback, 0)
     }
 }

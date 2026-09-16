@@ -62,6 +62,14 @@ class ImeMemoryConfig {
         return this.NamedStates.Has(name) ? StateClone(this.NamedStates[name]) : Map()
     }
 
+    SetDefaultState(name) {
+        if !this.NamedStates.Has(name)
+            return false
+        IniWrite(name, this.Path, "general", "defaultState")
+        this.DefaultState := name
+        return true
+    }
+
     EnsureDefaultFile() {
         if FileExist(this.Path)
             return
