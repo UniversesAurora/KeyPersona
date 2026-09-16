@@ -126,4 +126,3 @@ if ($buildSucceeded) {
         Restarted = $wasRunning -and -not $NoRestart
     }
 }
-
