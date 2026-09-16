@@ -46,6 +46,8 @@ RunSelfTests(baseDir) {
     testLogger := Logger(testConfig.LogPath, "off")
     startupApi := StartupManager(testLogger)
     AssertTest(InStr(startupApi.CommandLine(), "--startup") > 0, "Startup command generation", failures)
+    AssertTest(SubStr(startupApi.ShortcutPath(), -StrLen(StartupManager.ShortcutName)) = StartupManager.ShortcutName,
+        "Startup shortcut path generation", failures)
 
     tempConfigDir := A_Temp "\ime-memory-config-selftest-" DllCall("kernel32\GetCurrentProcessId", "UInt")
     try DirDelete(tempConfigDir, true)
