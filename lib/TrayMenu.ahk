@@ -70,8 +70,12 @@ class TrayMenuController {
         if !hasUserRule
             this.StateMenu.Check("全局默认（无用户规则）")
         this.StateMenu.Add()
+        usedStateLabels := Map()
         for stateName, namedState in this.App.Config.NamedStates {
             label := this.StateMenuLabel(stateName, namedState)
+            if usedStateLabels.Has(label)
+                label .= " · " SubStr(Fnv1a32(stateName "|" MapGet(namedState, "profile", "")), 1, 6)
+            usedStateLabels[label] := true
             this.DefaultMenu.Add(label, ObjBindMethod(this, "SetDefaultState", stateName))
             if (stateName = this.App.Config.DefaultState)
                 this.DefaultMenu.Check(label)
@@ -106,7 +110,10 @@ class TrayMenuController {
             return "微信输入法（中文）"
         if (stateName = "wetype-english")
             return "微信输入法（英文）"
-        label := this.App.Profiles.DisplayName(MapGet(namedState, "profile", "unknown"))
+        profileId := MapGet(namedState, "profile", "unknown")
+        label := this.App.Profiles.DisplayName(profileId)
+        if (label = profileId && MapGet(namedState, "description", "") != "")
+            label := namedState["description"]
         open := MapGet(namedState, "imeOpen", "unknown")
         if (open = "1")
             label .= "（中文）"
@@ -184,6 +191,7 @@ class TrayMenuController {
     }
 
     ShowMenu(*) {
+        this.App.RefreshInputProfiles()
         this.Refresh(true)
         A_TrayMenu.Show()
     }

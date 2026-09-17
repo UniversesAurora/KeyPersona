@@ -120,6 +120,8 @@ EVENT_SYSTEM_FOREGROUND
 
 注册表只用于发现，不直接修改用户的系统语言配置。
 
+打开托盘菜单时会再次枚举；若运行中切换到目录里尚不存在的活动 profile，也会触发带冷却时间的重新枚举。新发现的中文 TIP 在运行时 `config.ini` 生成中文/英文两个命名状态，其他布局生成一个状态。生成过程幂等，只添加缺失状态，不覆盖或删除用户配置。
+
 ### 5.2 读取
 
 读取当前前台线程的 `GetKeyboardLayout(threadId)`，并用 TSF active profile 信息尽量解析为完整 profile。当前只有一个中文 TIP 时，`0x0804` 可以无歧义映射到微信输入法；将来同语言有多个 TIP 时必须以完整 TSF profile 为准。

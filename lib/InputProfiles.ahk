@@ -11,6 +11,8 @@ class InputProfiles {
         this.Logger := logger
         this.Catalog := Map()
         this.ByLanguage := Map()
+        this.Revision := 0
+        this.LastCatalogRefreshTick := 0
         this.Manager := ""
         try this.Manager := ComObject(InputProfiles.CLSID_MANAGER, InputProfiles.IID_MANAGER)
         catch Error as err
@@ -21,6 +23,8 @@ class InputProfiles {
     RefreshCatalog() {
         this.Catalog := Map()
         this.ByLanguage := Map()
+        this.LastCatalogRefreshTick := TickCount64()
+        this.Revision += 1
         root := "HKEY_CURRENT_USER\Control Panel\International\User Profile"
         try {
             Loop Reg root, "K" {
@@ -37,9 +41,12 @@ class InputProfiles {
                     profile := this.ParseProfile(profileId)
                     if !profile.Count
                         continue
+                    catalogKey := StrLower(profileId)
+                    if this.Catalog.Has(catalogKey)
+                        continue
                     profile["languageTag"] := SubStr(languageKey, InStr(languageKey, "\",, -1) + 1)
                     profile["description"] := this.ReadDescription(profile)
-                    this.Catalog[StrLower(profileId)] := profile
+                    this.Catalog[catalogKey] := profile
                     langKey := Hex(profile["langId"], 4)
                     if !this.ByLanguage.Has(langKey)
                         this.ByLanguage[langKey] := []
@@ -101,6 +108,12 @@ class InputProfiles {
         hkl := threadId ? DllCall("user32\GetKeyboardLayout", "UInt", threadId, "Ptr") : 0
         langId := hkl & 0xFFFF
         profile := this.ResolveProfileForLanguage(langId, hkl)
+        catalogKey := profile.Count ? StrLower(profile["id"]) : ""
+        if ((!profile.Count || !this.Catalog.Has(catalogKey))
+            && TickCount64() - this.LastCatalogRefreshTick >= 30000) {
+            this.RefreshCatalog()
+            profile := this.ResolveProfileForLanguage(langId, hkl)
+        }
         return Map(
             "profile", profile.Count ? profile["id"] : Hex(langId, 4) ":unknown",
             "kind", profile.Count ? profile["kind"] : "unknown",

@@ -38,6 +38,7 @@ class ImeMemoryConfig {
                 continue
             state := Map(
                 "name", match[1],
+                "description", MapGet(values, "description", ""),
                 "profile", MapGet(values, "profile", "unknown"),
                 "imeOpen", MapGet(values, "imeOpen", "unknown"),
                 "conversion", MapGet(values, "conversion", "preserve"),
@@ -46,6 +47,62 @@ class ImeMemoryConfig {
             states[match[1]] := state
         }
         return states
+    }
+
+    EnsureDiscoveredStates(catalog) {
+        if !IsObject(catalog)
+            return 0
+        existing := Map()
+        for stateName, state in this.NamedStates {
+            key := this.DiscoveredStateKey(
+                MapGet(state, "profile", "unknown"),
+                MapGet(state, "imeOpen", "unknown")
+            )
+            existing[key] := true
+        }
+        added := 0
+        for catalogKey, profile in catalog {
+            profileId := MapGet(profile, "id", "")
+            if (profileId = "")
+                continue
+            languageState := Map(
+                "profile", profileId,
+                "langId", Hex(MapGet(profile, "langId", 0), 4)
+            )
+            if (MapGet(profile, "kind", "") = "tip" && IsChineseLanguageState(languageState)) {
+                added += this.EnsureDiscoveredState(profile, "1", "chinese", existing)
+                added += this.EnsureDiscoveredState(profile, "0", "english", existing)
+            } else {
+                added += this.EnsureDiscoveredState(profile, "unknown", "", existing)
+            }
+        }
+        if added
+            this.Reload()
+        return added
+    }
+
+    EnsureDiscoveredState(profile, imeOpen, suffix, existing) {
+        profileId := MapGet(profile, "id", "")
+        key := this.DiscoveredStateKey(profileId, imeOpen)
+        if existing.Has(key)
+            return 0
+        stateName := "auto-" StrLower(Fnv1a32(StrLower(profileId)))
+        if (suffix != "")
+            stateName .= "-" suffix
+        section := "state." stateName
+        description := StrReplace(MapGet(profile, "description", profileId), "`n", " ")
+        description := StrReplace(description, "`r", " ")
+        IniWrite(description, this.Path, section, "description")
+        IniWrite(profileId, this.Path, section, "profile")
+        IniWrite(imeOpen, this.Path, section, "imeOpen")
+        IniWrite("preserve", this.Path, section, "conversion")
+        IniWrite("preserve", this.Path, section, "sentence")
+        existing[key] := true
+        return 1
+    }
+
+    DiscoveredStateKey(profileId, imeOpen) {
+        return StrLower(Trim(profileId "")) "|" StrLower(Trim(imeOpen ""))
     }
 
     LoadPrefixedSections(prefix) {

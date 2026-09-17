@@ -11,6 +11,10 @@ class ImeMemoryApp {
         this.Startup := StartupManager(this.Logger)
         this.Identity := WindowIdentity(this.Config, this.Logger)
         this.Profiles := InputProfiles(this.Identity, this.Config, this.Logger)
+        addedStates := this.Config.EnsureDiscoveredStates(this.Profiles.Catalog)
+        this.SyncedProfileRevision := this.Profiles.Revision
+        if addedStates
+            this.Logger.Info("Added " addedStates " discovered input state(s) to " AppInfo.ConfigFile)
         this.Mode := ImeMode(this.Identity, this.Config, this.Logger)
         this.Rules := RuleEngine(this.Config, this.Logger)
         this.Store := StateStore(this.Config.StatePath, this.Logger)
@@ -269,6 +273,7 @@ class ImeMemoryApp {
 
     ReadState(windowInfo) {
         profile := this.Profiles.Read(windowInfo)
+        this.SyncDiscoveredProfiles()
         mode := this.Mode.Read(windowInfo, MapGet(profile, "kind", "unknown"))
         return Map(
             "profile", MapGet(profile, "profile", "unknown"),
@@ -279,6 +284,23 @@ class ImeMemoryApp {
             "conversion", MapGet(mode, "conversion", "unknown"),
             "sentence", MapGet(mode, "sentence", "unknown")
         )
+    }
+
+    RefreshInputProfiles(*) {
+        this.Profiles.RefreshCatalog()
+        return this.SyncDiscoveredProfiles()
+    }
+
+    SyncDiscoveredProfiles() {
+        if (this.SyncedProfileRevision = this.Profiles.Revision)
+            return 0
+        added := this.Config.EnsureDiscoveredStates(this.Profiles.Catalog)
+        this.SyncedProfileRevision := this.Profiles.Revision
+        if added {
+            this.RefreshRuleEngine()
+            this.Logger.Info("Added " added " discovered input state(s) to " AppInfo.ConfigFile)
+        }
+        return added
     }
 
     Poll() {
