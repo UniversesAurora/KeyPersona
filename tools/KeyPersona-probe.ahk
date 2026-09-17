@@ -9,7 +9,7 @@
 #Include ..\lib\ImeMode.ahk
 
 baseDir := RegExReplace(A_ScriptDir, "\\tools$")
-probeConfig := ImeMemoryConfig(baseDir)
+probeConfig := KeyPersonaConfig(baseDir)
 probeLogger := Logger(probeConfig.LogPath, "off")
 identityApi := WindowIdentity(probeConfig, probeLogger)
 profileApi := InputProfiles(identityApi, probeConfig, probeLogger)
@@ -39,7 +39,7 @@ if currentWindow.Count {
 } else {
     output .= "No recordable foreground window.`n"
 }
-reportPath := A_ScriptDir "\ime-probe.txt"
+reportPath := A_ScriptDir "\KeyPersona-probe.txt"
 try FileDelete(reportPath)
 FileAppend(output, reportPath, "UTF-8")
 ExitApp

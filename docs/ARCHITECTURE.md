@@ -1,4 +1,4 @@
-# IME Memory：Windows 输入法按窗口记忆工具设计
+# KeyPersona 架构说明
 
 ## 1. 设计结论
 
@@ -265,15 +265,16 @@ state=english-us
 ## 11. 模块划分
 
 ```text
-ime-memory/
-├─ ime-memory.ahk          # 入口、生命周期
+KeyPersona/
+├─ KeyPersona.ahk          # 入口、生命周期
 ├─ build.ps1              # 自检、编译、安装和重启
 ├─ config.ini              # 用户配置
 ├─ assets/
-│  ├─ ime-memory.ico       # 多尺寸程序图标
-│  └─ ime-memory-icon.png  # 图标主稿
+│  ├─ KeyPersona.ico       # 多尺寸程序图标
+│  └─ KeyPersona-icon.png  # 图标主稿
 ├─ lib/
 │  ├─ AppInfo.ahk          # 产品名称、文件名、作者和编译元数据
+│  ├─ LegacyMigration.ahk  # 旧名称、日志和安装状态迁移
 │  ├─ App.ahk              # 协调状态机
 │  ├─ Config.ahk           # 配置读取和默认状态写入
 │  ├─ WinEventHook.ahk     # foreground/focus 事件
@@ -289,7 +290,7 @@ ime-memory/
 │  ├─ SelfTest.ahk         # 自检
 │  └─ Utils.ahk            # 通用函数
 ├─ tools/
-│  └─ ime-probe.ahk        # 环境能力探针
+│  └─ KeyPersona-probe.ahk # 环境能力探针
 └─ README.md
 ```
 

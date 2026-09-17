@@ -35,7 +35,7 @@ RunSelfTests(baseDir) {
     if (StrLower(selfTestFolder) = "src")
         AssertTest(RuntimeBaseDir() = selfTestParent, "Source runtime uses install-root configuration", failures)
 
-    tempPath := A_Temp "\ime-memory-selftest-" DllCall("kernel32\GetCurrentProcessId", "UInt") ".ini"
+    tempPath := A_Temp "\keypersona-selftest-" DllCall("kernel32\GetCurrentProcessId", "UInt") ".ini"
     try FileDelete(tempPath)
     FileAppend("[one]`nkey=value`n", tempPath, "UTF-8")
     doc := IniDocument.Load(tempPath)
@@ -43,18 +43,38 @@ RunSelfTests(baseDir) {
     try FileDelete(tempPath)
     FileAppend("utilities-ok`n", progressPath, "UTF-8")
 
-    testConfig := ImeMemoryConfig(baseDir)
+    testConfig := KeyPersonaConfig(baseDir)
     testLogger := Logger(testConfig.LogPath, "off")
     startupApi := StartupManager(testLogger)
     AssertTest(InStr(startupApi.CommandLine(), "--startup") > 0, "Startup command generation", failures)
     AssertTest(SubStr(startupApi.ShortcutPath(), -StrLen(StartupManager.ShortcutName)) = StartupManager.ShortcutName,
         "Startup shortcut path generation", failures)
 
-    tempConfigDir := A_Temp "\ime-memory-config-selftest-" DllCall("kernel32\GetCurrentProcessId", "UInt")
+    migrationDir := A_Temp "\keypersona-migration-selftest-" DllCall("kernel32\GetCurrentProcessId", "UInt")
+    try DirDelete(migrationDir, true)
+    DirCreate(migrationDir)
+    FileAppend("; IME Memory 用户配置。`n; tools\ime-probe.ahk`nignoreExe=ime-memory.exe,other.exe`n",
+        migrationDir "\" AppInfo.ConfigFile, "UTF-8")
+    legacyState := "; Managed by IME Memory.`nidentityKey=ime-memory`ntitle=IME Memory`n"
+    FileAppend(legacyState, migrationDir "\" AppInfo.StateFile, "UTF-8")
+    FileAppend(legacyState, migrationDir "\" AppInfo.StateFile ".bak", "UTF-8")
+    FileAppend("IME Memory ime-memory`n", migrationDir "\ime-memory.log", "UTF-8")
+    LegacyMigration.MigrateRuntimeFiles(migrationDir)
+    migratedText := FileRead(migrationDir "\" AppInfo.ConfigFile, "UTF-8")
+        . FileRead(migrationDir "\" AppInfo.StateFile, "UTF-8")
+        . FileRead(migrationDir "\" AppInfo.StateFile ".bak", "UTF-8")
+        . FileRead(migrationDir "\" AppInfo.LogFile, "UTF-8")
+    AssertTest(!InStr(migratedText, "IME Memory") && !InStr(migratedText, "ime-memory")
+        && InStr(migratedText, AppInfo.Name), "Legacy product data migration", failures)
+    AssertTest(!FileExist(migrationDir "\ime-memory.log") && FileExist(migrationDir "\" AppInfo.LogFile),
+        "Legacy log file migration", failures)
+    try DirDelete(migrationDir, true)
+
+    tempConfigDir := A_Temp "\keypersona-config-selftest-" DllCall("kernel32\GetCurrentProcessId", "UInt")
     try DirDelete(tempConfigDir, true)
     DirCreate(tempConfigDir)
     FileCopy(baseDir "\" AppInfo.ConfigFile, tempConfigDir "\" AppInfo.ConfigFile, true)
-    editableConfig := ImeMemoryConfig(tempConfigDir)
+    editableConfig := KeyPersonaConfig(tempConfigDir)
     AssertTest(editableConfig.SetDefaultState("english-us"), "Default state write", failures)
     AssertTest(editableConfig.SetBacktickInChinese(true), "Backtick option write", failures)
     discoveredChineseId := "0804:{11111111-1111-1111-1111-111111111111}{22222222-2222-2222-2222-222222222222}"
@@ -119,7 +139,7 @@ RunSelfTests(baseDir) {
     storedWindowRule := editableConfig.GetWindowRule(configWindow)
     AssertTest(storedWindowRule.Count && storedWindowRule["stateName"] = "wetype-chinese",
         "Window rule lookup", failures)
-    reloadedConfig := ImeMemoryConfig(tempConfigDir)
+    reloadedConfig := KeyPersonaConfig(tempConfigDir)
     AssertTest(reloadedConfig.DefaultState = "english-us", "Default state reload", failures)
     AssertTest(reloadedConfig.BacktickInChinese, "Backtick option reload", failures)
     AssertTest(reloadedConfig.GetWindowRule(configWindow).Count > 0, "Window rule reload", failures)
@@ -145,7 +165,7 @@ RunSelfTests(baseDir) {
         "Unavailable global default falls back to a valid state", failures)
     try DirDelete(tempConfigDir, true)
 
-    tempState := A_Temp "\ime-memory-state-selftest-" DllCall("kernel32\GetCurrentProcessId", "UInt") ".ini"
+    tempState := A_Temp "\keypersona-state-selftest-" DllCall("kernel32\GetCurrentProcessId", "UInt") ".ini"
     try FileDelete(tempState)
     try FileDelete(tempState ".bak")
     storeApi := StateStore(tempState, testLogger)

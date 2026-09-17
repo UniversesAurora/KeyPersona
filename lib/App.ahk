@@ -1,12 +1,13 @@
 #Requires AutoHotkey v2.0
 
-class ImeMemoryApp {
+class KeyPersonaApp {
     static EVENT_MESSAGE := 0x8001
 
     __New(baseDir, observeOnly := false) {
         this.BaseDir := baseDir
         this.ObserveOnly := observeOnly
-        this.Config := ImeMemoryConfig(baseDir)
+        LegacyMigration.MigrateRuntimeFiles(baseDir)
+        this.Config := KeyPersonaConfig(baseDir)
         this.Logger := Logger(this.Config.LogPath, this.Config.LogLevel)
         this.Startup := StartupManager(this.Logger)
         this.Identity := WindowIdentity(this.Config, this.Logger)
@@ -51,7 +52,7 @@ class ImeMemoryApp {
         this.MessageCallback := ObjBindMethod(this, "OnWinEventMessage")
         this.PollCallback := ObjBindMethod(this, "Poll")
         this.FlushCallback := ObjBindMethod(this, "FlushState")
-        this.Hook := ForegroundWinEventHook(this.EventGui.Hwnd, ImeMemoryApp.EVENT_MESSAGE, this.Logger)
+        this.Hook := ForegroundWinEventHook(this.EventGui.Hwnd, KeyPersonaApp.EVENT_MESSAGE, this.Logger)
         this.BacktickKey := BacktickKeyController(this)
         this.Tray := TrayMenuController(this)
     }
@@ -60,7 +61,7 @@ class ImeMemoryApp {
         try this.Startup.MigrateLegacy()
         catch Error as migrationError
             this.Logger.Error("Startup migration failed: " migrationError.Message)
-        OnMessage(ImeMemoryApp.EVENT_MESSAGE, this.MessageCallback)
+        OnMessage(KeyPersonaApp.EVENT_MESSAGE, this.MessageCallback)
         this.Hook.Start()
         this.Started := true
         this.Logger.Info(AppInfo.Name " started" (this.ObserveOnly ? " in observe-only mode" : ""))
@@ -637,7 +638,7 @@ class ImeMemoryApp {
         try SetTimer(this.PollCallback, 0)
         try SetTimer(this.FlushCallback, 0)
         try this.Hook.Stop()
-        try OnMessage(ImeMemoryApp.EVENT_MESSAGE, this.MessageCallback, 0)
+        try OnMessage(KeyPersonaApp.EVENT_MESSAGE, this.MessageCallback, 0)
         try this.BacktickKey.Dispose()
         try this.Tray.Dispose()
         try this.Store.Flush()

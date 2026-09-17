@@ -4,6 +4,7 @@
 Persistent
 
 #Include lib\AppInfo.ahk
+#Include lib\LegacyMigration.ahk
 #Include lib\Utils.ahk
 #Include lib\Config.ahk
 #Include lib\StartupManager.ahk
@@ -31,15 +32,15 @@ if HasArgument("--self-test") {
 observeOnly := HasArgument("--observe-only")
 smokeSeconds := ArgumentValue("--smoke-seconds=", 0)
 appBaseDir := RuntimeBaseDir()
-global IME_MEMORY_APP := ImeMemoryApp(appBaseDir, observeOnly)
-OnExit(ObjBindMethod(IME_MEMORY_APP, "Shutdown"))
+global KEYPERSONA_APP := KeyPersonaApp(appBaseDir, observeOnly)
+OnExit(ObjBindMethod(KEYPERSONA_APP, "Shutdown"))
 
 try {
-    IME_MEMORY_APP.Start()
+    KEYPERSONA_APP.Start()
     if (smokeSeconds > 0)
         SetTimer((*) => ExitApp(), -smokeSeconds * 1000)
 } catch Error as startupError {
-    IME_MEMORY_APP.Logger.Error("Fatal startup error: " startupError.Message " at " startupError.File ":" startupError.Line)
+    KEYPERSONA_APP.Logger.Error("Fatal startup error: " startupError.Message " at " startupError.File ":" startupError.Line)
     FileAppend(AppInfo.Name " startup failed: " startupError.Message "`n", "**", "UTF-8")
     ExitApp(1)
 }
@@ -75,7 +76,7 @@ GlobalErrorHandler(thrown, mode) {
         . "File: " thrown.File "`n"
         . "Line: " thrown.Line "`n"
         . "Mode: " mode "`n"
-    try FileAppend(FormatTime(, "yyyy-MM-dd HH:mm:ss") " " message, A_ScriptDir "\fatal-error.log", "UTF-8")
+    try FileAppend(FormatTime(, "yyyy-MM-dd HH:mm:ss") " " message, A_ScriptDir "\" AppInfo.ErrorLogFile, "UTF-8")
     try FileAppend(message, "**", "UTF-8")
     ExitApp(1)
     return true

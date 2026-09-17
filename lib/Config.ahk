@@ -1,6 +1,6 @@
 #Requires AutoHotkey v2.0
 
-class ImeMemoryConfig {
+class KeyPersonaConfig {
     __New(baseDir) {
         this.BaseDir := baseDir
         this.Path := baseDir "\" AppInfo.ConfigFile
@@ -335,7 +335,7 @@ class ImeMemoryConfig {
         if FileExist(this.Path)
             return
         template := "; " AppInfo.Name " 用户配置。修改后从托盘选择“重新加载”。`n"
-            . "; profile 可从托盘状态或 tools\ime-probe.ahk 的输出中复制。`n`n"
+            . "; profile 可从托盘状态或 tools\KeyPersona-probe.ahk 的输出中复制。`n`n"
             . "[general]`n"
             . "enabled=1`n"
             . "defaultState=wetype-chinese`n"
