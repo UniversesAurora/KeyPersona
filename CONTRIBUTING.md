@@ -2,14 +2,16 @@
 
 感谢参与 KeyPersona。提交改动前，请先确认问题能够复现，并尽量把一次提交限制在一个清晰目标内。
 
-## 开发环境
+## 开发环境与构建工具
 
 - Windows 10 或 Windows 11（64 位）
-- [PowerShell 7](https://learn.microsoft.com/powershell/)
-- [AutoHotkey v2](https://www.autohotkey.com/)（64 位）
-- [官方 Ahk2Exe 编译器](https://github.com/AutoHotkey/Ahk2Exe/releases)
+- [PowerShell 7](https://learn.microsoft.com/powershell/)：运行 `build.ps1`
+- [AutoHotkey v2](https://www.autohotkey.com/)（64 位）：运行源码自检，并作为编译基础运行时
+- [官方 Ahk2Exe 编译器](https://github.com/AutoHotkey/Ahk2Exe/releases)：生成独立 EXE
 
-构建脚本依次从命令参数、`KEYPERSONA_AHK_RUNTIME` / `KEYPERSONA_AHK_COMPILER`、标准安装目录和 `PATH` 查找依赖。
+以上要求只用于开发和构建，不是 `KeyPersona.exe` 的运行依赖。项目没有需要另外还原的第三方代码库，也不使用包管理器。
+
+构建脚本依次从命令参数、`KEYPERSONA_AHK_RUNTIME` / `KEYPERSONA_AHK_COMPILER`、标准安装目录和 `PATH` 查找 AutoHotkey 运行时与 Ahk2Exe。
 也可以把 `Ahk2Exe.exe` 放入仓库根目录的 `build-tools`。
 
 ## 构建与测试
@@ -26,7 +28,7 @@ pwsh -NoProfile -File .\build.ps1
 pwsh -NoProfile -File .\build.ps1 -InstallDirectory '<install-directory>'
 ```
 
-依赖不在标准位置时：
+AutoHotkey 运行时或 Ahk2Exe 不在标准位置时：
 
 ```powershell
 pwsh -NoProfile -File .\build.ps1 `

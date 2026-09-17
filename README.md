@@ -4,6 +4,12 @@ KeyPersona 在 Windows 上按窗口记住输入法。切回终端、浏览器、
 
 程序使用 AutoHotkey v2 和原生 Windows API，不依赖 Electron、WebView 或 Chromium。它常驻后台，通过托盘菜单管理设置，配置和学习状态保存在程序目录中。
 
+## 运行要求
+
+运行发布页提供的 `KeyPersona.exe` 只需要 64 位 Windows 10 或 Windows 11，以及一个当前用户可写的本地目录。EXE 已包含 AutoHotkey 运行时，用户不需要安装 AutoHotkey、PowerShell 7 或 Ahk2Exe。
+
+直接运行 `.ahk` 源码时才需要 64 位 AutoHotkey v2。PowerShell 7 和 Ahk2Exe 只用于从源码构建 EXE，不是程序的运行依赖。
+
 ## 功能
 
 - 按当前会话窗口独立记忆输入法，跨重启按可配置的窗口身份恢复。
@@ -26,7 +32,7 @@ KeyPersona 在 Windows 上按窗口记住输入法。切回终端、浏览器、
 
 ## 安装与运行
 
-从 [GitHub Releases](https://github.com/UniversesAurora/KeyPersona/releases/tag/v1.0.0) 下载 ZIP 或单独的 `KeyPersona.exe`。把 EXE 放进可写目录后运行；程序会在同一目录创建 `config.ini`、`state.ini` 和日志。编译版包含 AutoHotkey 运行时，目标机器不需要另行安装 AutoHotkey。
+从 [GitHub Releases](https://github.com/UniversesAurora/KeyPersona/releases/tag/v1.0.0) 下载 ZIP 或单独的 `KeyPersona.exe`。把 EXE 放进可写目录后运行；程序会在同一目录创建 `config.ini`、`state.ini` 和日志。
 
 ZIP 中的 `config.example.ini` 是默认配置示例。升级现有安装时不要用它覆盖自己的 `config.ini`。
 
@@ -109,12 +115,14 @@ state=english-us
 
 ## 从源码构建
 
-### 要求
+### 构建环境与工具
 
 - Windows 10 或 Windows 11（64 位）
-- [PowerShell 7](https://learn.microsoft.com/powershell/)
-- [AutoHotkey v2](https://www.autohotkey.com/)（64 位）
-- [官方 Ahk2Exe 编译器](https://github.com/AutoHotkey/Ahk2Exe/releases)
+- [PowerShell 7](https://learn.microsoft.com/powershell/)：运行 `build.ps1`
+- [AutoHotkey v2](https://www.autohotkey.com/)（64 位）：运行源码自检，并作为编译基础运行时
+- [官方 Ahk2Exe 编译器](https://github.com/AutoHotkey/Ahk2Exe/releases)：生成独立 EXE
+
+项目没有需要另外下载的第三方代码库，也不使用包管理器。以上要求只用于开发和构建；最终用户只运行 EXE 时不需要安装这些工具。
 
 在任意克隆目录运行：
 
@@ -135,7 +143,7 @@ dist\config.ini
 pwsh -NoProfile -File .\build.ps1 -InstallDirectory '<install-directory>'
 ```
 
-依赖不在标准位置时：
+AutoHotkey 运行时或 Ahk2Exe 不在标准位置时：
 
 ```powershell
 pwsh -NoProfile -File .\build.ps1 `

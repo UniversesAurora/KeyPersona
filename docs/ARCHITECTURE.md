@@ -1,322 +1,320 @@
 # KeyPersona 架构说明
 
-## 1. 设计结论
+## 1. 技术选择和运行要求
 
-采用 **AutoHotkey v2 + Win32/TSF/IMM32 API + INI**，不使用 Electron、WebView 或 Chromium 运行时。
+KeyPersona 使用 AutoHotkey v2、Win32、TSF、IMM32 和 INI。程序没有 Electron、WebView、Chromium 或第三方运行库。
 
-程序主体是一个无界面的 AutoHotkey 常驻脚本：
+发布版 `KeyPersona.exe` 已包含 AutoHotkey 运行时。最终用户只需要 64 位 Windows 10 或 Windows 11，以及一个当前用户可写的本地目录；不需要安装 AutoHotkey、PowerShell 7 或 Ahk2Exe。
 
-- 用 `SetWinEventHook(EVENT_SYSTEM_FOREGROUND)` 监听前台窗口变化。
-- 前台切换后用 `GetGUIThreadInfo` 找到同一窗口内的真实焦点控件，但窗口记忆仍归属于顶层窗口。
-- 用 `GetKeyboardLayout` 读取输入语言层。
-- 对微信输入法和兼容 IME，优先通过 `ImmGetDefaultIMEWnd` + `WM_IME_CONTROL` 读取和恢复内部中/英文状态。
-- 通过 TSF profile 标识保存具体输入法；HKL 只作为语言层和兼容路径，不能独自区分同一语言下的多个 TSF 输入法。
-- 用事件驱动加低频、可自适应采样检测用户手动切换，避免几十毫秒一次的高频轮询。
-- 配置和学习状态分别写入 `config.ini` 与 `state.ini`；机器状态采用临时文件加原子替换，避免异常退出留下半个文件。
-- 产品标识和产物名称集中在 `lib/AppInfo.ahk`，运行时界面、自启动和构建脚本共用这些值。
+开发方式分三种：
 
-验证环境：
+- 直接运行源码：需要 64 位 AutoHotkey v2。
+- 构建 EXE：需要 PowerShell 7、64 位 AutoHotkey v2 和官方 Ahk2Exe。
+- 创建 GitHub Release：在构建工具之外还需要 Git 和 GitHub CLI。
 
-- AutoHotkey `2.0.28` 64 位运行时。
-- 当前启用的输入 profile 只有 English US 与微信输入法。
-- English US：`0409:00000409`。
-- 微信输入法 2.1.4.6：`0804:{86598FB9-66A2-463E-B9C2-AEB906D477AD}{607FDF85-FCC8-4DBD-A365-41296F980C9C}`。
-- 微信输入法的 TSF/TIP 模块已启用。
-- 在 Windows Terminal 的实际测试中，`ImmGetContext` 为空，但 `ImmGetDefaultIMEWnd` + `WM_IME_CONTROL` 可以读取 IME 开关和 conversion mode。因此不能只实现常见的 `ImmGetContext` 方案。
+PowerShell 7 只负责执行 `build.ps1`，不是程序运行时的一部分。
 
-## 2. 状态模型
+## 2. 运行流程
 
-每条状态同时保存 profile 和可选的 IME 内部状态：
+程序常驻后台，不创建主窗口。启动后依次完成：
+
+1. 迁移旧名称留下的配置、状态、日志和自启动入口。
+2. 读取或创建 `config.ini`。
+3. 枚举当前用户启用的输入 profile，并对账命名状态、规则和自动记忆。
+4. 读取 `state.ini`；文件损坏时尝试读取 `state.ini.bak`。
+5. 安装 `SetWinEventHook(EVENT_SYSTEM_FOREGROUND)`，启动托盘菜单和输入法状态采样。
+6. 前台窗口变化时选择目标状态；实际状态已经符合目标时不发送切换消息。
+
+核心恢复路径是：
+
+```text
+EVENT_SYSTEM_FOREGROUND
+  → WinEvent 回调投递内部消息
+  → 等待 foregroundSettleMs（默认 80 ms）
+  → 再次确认前台窗口
+  → 解析顶层宿主和焦点控件
+  → 按规则、记忆、默认值选择目标状态
+  → 比较实际状态
+  → 仅在不一致时切换并回读验证
+```
+
+WinEvent 回调不直接读写文件或切换输入法，避免回调重入和事件乱序。跨进程消息使用 `SendMessageTimeout`，目标窗口无响应时跳过，不让 KeyPersona 一直卡住。
+
+## 3. 输入法状态模型
+
+每条命名状态同时保存 profile 和可选的 IME 内部模式：
 
 ```ini
-[state.wetype-cn]
+[state.wetype-chinese]
 profile=0804:{86598FB9-66A2-463E-B9C2-AEB906D477AD}{607FDF85-FCC8-4DBD-A365-41296F980C9C}
 imeOpen=1
 conversion=preserve
 sentence=preserve
-
-[state.wetype-en]
-profile=0804:{86598FB9-66A2-463E-B9C2-AEB906D477AD}{607FDF85-FCC8-4DBD-A365-41296F980C9C}
-imeOpen=0
-conversion=preserve
-sentence=preserve
-
-[state.english-us]
-profile=0409:00000409
-imeOpen=unknown
-conversion=preserve
-sentence=preserve
 ```
 
-`imeOpen` 是区分“同一个中文输入法的中文/英文模式”的首要字段。`conversionMode` 与 `sentenceMode` 只在目标 IME 确实支持、并且读写回测成功时才恢复；不支持时保存为 `unknown`，避免向第三方输入法写入它不理解的标志。
+各字段的用途：
 
-这里把需求中的“微软拼音中文/英文”推广为“任意支持可观测开关状态的 IME”。将来安装微软拼音后沿用同一状态模型，不需要重写窗口记忆层。
+- `profile`：完整 TSF profile ID，或键盘布局的 `LANGID:KLID`。
+- `imeOpen`：中文输入法的内部中文/英文开关；`1` 为中文，`0` 为英文，`unknown` 表示无法可靠读取。
+- `conversion`、`sentence`：只有目标 IME 支持并能可靠读写时才使用；`preserve` 表示不改。
+- `description`：托盘菜单显示名称。
+- `generated=1`：该命名状态由自动发现创建。
 
-## 3. 窗口识别
+profile 层负责区分 English US、微信输入法、微软拼音等输入源；`imeOpen` 再区分同一个中文输入法的中文和英文模式。内部模式不可读时，KeyPersona 仍可记忆和恢复 profile，不猜测，也不模拟输入法私有快捷键。
 
-### 3.1 运行时身份
+## 4. 窗口识别
 
-运行期间用 HWND 维护临时映射，以保证同一程序的多个现存窗口绝对分开。HWND 不写成永久主键。
+### 4.1 顶层宿主
 
-焦点可能落在 WebView2、浏览器渲染控件或子控件上。识别时按以下顺序回到真正宿主：
+输入焦点可能位于子控件、浏览器渲染控件或 WebView2 内部。KeyPersona 使用顶层宿主保存窗口记忆：
 
-1. `GetGUIThreadInfo` 取得真实 `hwndFocus`。
-2. `GetAncestor(..., GA_ROOT)` / `GA_ROOTOWNER` 取得顶层宿主。
-3. 以顶层宿主的 PID 调用 `QueryFullProcessImageName`，取完整路径和 exe 名。
-4. 同时保存顶层 window class、标准化后的标题及可选 AUMID/package 信息。
+1. 通过 `GetAncestor(..., GA_ROOT)` 找到顶层窗口。
+2. 通过 `GetWindowThreadProcessId` 和 `QueryFullProcessImageName` 读取宿主进程路径与 exe 名。
+3. 保存顶层 window class 和标准化标题。
+4. 切换或读取输入法时，再用 `GetGUIThreadInfo` 找到当前焦点控件。
 
-因此不会看到一个 WebView2 子控件就把窗口认成 `msedgewebview2.exe`。本机 Raycast 的实际顶层进程就是 `Raycast.exe`，窗口类为 `HwndWrapper[Raycast;Main;...]`，用户规则直接写 `Raycast.exe` 即可。
+这个过程没有针对 Raycast 写特殊分支。只要顶层窗口属于 `Raycast.exe`，通用宿主识别就会得到 `Raycast.exe`；WebView2 子控件不会让整个窗口被识别成 `msedgewebview2.exe`。
 
-### 3.2 持久身份
+### 4.2 会话内身份
 
-采用可配置的 identity policy：
+程序运行期间始终按顶层 HWND 保存临时状态。同一应用的多个现存窗口可以独立记忆，即使它们跨重启使用的是应用级身份。
 
-- `app`：只按规范化 exe 路径/文件名。默认策略，稳定且简单。
-- `window`：`exe + class + 标准化标题`。用于 Edge、Chrome 等需要多窗口分别记忆的程序。
-- `rule`：用户提供 title/class 正则，把经常变化的标题归到稳定标签。
+HWND 不写成永久主键。窗口关闭或 Windows 重启后，旧 HWND 没有可复用价值。
 
-会话内始终按 HWND 区分；identity policy 只决定重启后怎样找回记录。
+### 4.3 跨重启身份
 
-浏览器没有向普通 Win32 程序暴露“跨重启不变的浏览器窗口 ID”。所以对 Edge/Chrome：
+跨重启只使用两种 identity mode：
 
-- 当前会话内可以可靠区分每个窗口，即使标签页标题改变。
-- 重启后的最佳无扩展方案是 `exe + class + 标准化标题/用户规则`。
-- 若两个浏览器窗口重启后标题完全相同，无法保证映射到原来的那个窗口；这是 Win32 可见信息的边界，不应假装能可靠识别。
+- `app`：规范化后的 exe 文件名。默认模式，同一 exe 的多个窗口共享一条持久记忆。
+- `window`：`exe + class + 标准化标题`。默认用于 Edge、Chrome、Firefox、Explorer 和 Zettlr。
 
-Explorer 后续可增加专用 identity provider，用 Shell COM 读取文件夹路径，比窗口标题更稳定；基础版本仍可先用 class + 标题。
+`windowModeExe` 在 `config.ini` 的 `[identity]` 中配置。完整进程路径会作为状态元数据保存，也可以由应用规则的 `pathRegex` 匹配，但它不是默认持久身份的一部分。
 
-### 3.3 忽略对象
+应用规则不是第三种 identity mode。`[rule.*]` 可以组合 `exe`、`pathRegex`、`classRegex` 和 `titleRegex`；填写的条件必须全部匹配。
 
-默认忽略程序自己的窗口、桌面、任务切换器、输入法候选框、工具提示、无宿主的临时菜单，以及不应被记忆的系统安全桌面。`Shell_TrayWnd`、`Shell_SecondaryTrayWnd` 和 `TopLevelWindowForOverflowXamlIsland` 等任务栏/托盘表面也会被忽略，因此展开折叠托盘不会把“当前窗口”覆盖成 Explorer；真正的资源管理器 `CabinetWClass` 窗口不受影响。
+浏览器没有向普通 Win32 程序提供跨重启稳定的窗口 ID。标题相同的两个浏览器窗口在重启后可能无法区分，这是当前识别策略的边界。
 
-## 4. 前台窗口监听
+### 4.4 忽略对象
 
-主路径：
+程序自己的窗口、不可见窗口、桌面、任务栏、托盘溢出面板、输入法候选框和工具提示不参与记忆。任务栏和折叠托盘使用的 Explorer 窗口类会被忽略，真正的资源管理器 `CabinetWClass` 不受影响。
 
-```text
-EVENT_SYSTEM_FOREGROUND
-  → WinEvent 回调只投递内部消息
-  → 默认等待 80 ms，让 Windows 先完成自己的输入法恢复
-  → 重新读取 GetForegroundWindow 和当前输入法状态
-  → 解析宿主身份
-  → 按优先级选择目标状态
-  → 恢复并异步验证
-```
+## 5. profile 发现、读取和切换
 
-使用 `WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS`，不向其他进程注入 DLL。AutoHotkey 自带消息循环可以接收回调。
+### 5.1 自动发现和清理
 
-回调中不直接读写文件，也不直接切换输入法，以避免 WinEvent 重入和事件乱序。回调仅使用 `PostMessage` 或一次性短 `SetTimer` 把工作放回脚本主线程。延迟结束后先比较实际状态；如果 Windows 已经恢复到目标状态，不发送任何切换消息。
+KeyPersona 在以下时机重新枚举当前用户启用的输入法：
 
-切换和采样时会通过 `GetGUIThreadInfo` 重新获取当前焦点控件，因此不会把一个窗口内的不同文本框误当成不同“窗口记录”。
+- 程序启动时。
+- 打开托盘菜单时。
+- 观察到目录中不存在的活动 profile 时；重复刷新带冷却时间。
 
-## 5. profile 读取与切换
+发现来源包括当前用户语言 profile 注册表和 TSF TIP 注册信息。程序只读取这些信息，不修改 Windows 的语言列表。
 
-### 5.1 自动发现
+自动发现遵循以下规则：
 
-启动时枚举：
-
-- `HKCU\Control Panel\International\User Profile\<language>` 中当前用户启用的 TIP/KLID。
-- `HKLM\SOFTWARE\Microsoft\CTF\TIP\<CLSID>\LanguageProfile\<LANGID>\<profile GUID>` 中的说明和能力信息。
-
-注册表只用于发现，不直接修改用户的系统语言配置。
-
-打开托盘菜单时会再次枚举；若运行中切换到目录里尚不存在的活动 profile，也会触发带冷却时间的重新枚举。新发现的中文 TIP 在运行时 `config.ini` 生成中文/英文两个命名状态，其他布局生成一个状态。生成阶段幂等，只添加缺失状态，不覆盖已有有效状态。
-
-对账键为完整 profile ID 与规范化后的 `imeOpen`。同键重复状态优先保留用户手写项，自动项或后续重复项会删除，规则会改指向保留项。已不在启用 profile 目录中的状态、规则和自动记忆会清理；失效默认值按“有效中文状态 → English US → 任一有效状态”回退。只有 profile 枚举成功且结果非空时才允许清理，避免临时注册表读取失败误删配置。
+- 中文 TIP 生成中文、英文两个命名状态；其他键盘布局生成一个状态。
+- 唯一键是完整 profile ID 加规范化后的 `imeOpen`。
+- 已存在同一实际状态时不重复创建。
+- 用户手写状态优先于 `generated=1` 的自动状态；重复项删除后，规则会改指向保留项。
+- profile 已不可用时，删除对应的命名状态、用户规则和自动记忆。
+- 全局默认失效时，依次选择有效中文状态、English US、任一有效状态。
+- 只有枚举成功且结果非空时才执行删除，避免临时读取失败误删配置。
 
 ### 5.2 读取
 
-读取当前前台线程的 `GetKeyboardLayout(threadId)`，并用 TSF active profile 信息尽量解析为完整 profile。当前只有一个中文 TIP 时，`0x0804` 可以无歧义映射到微信输入法；将来同语言有多个 TIP 时必须以完整 TSF profile 为准。
+KeyPersona 先用 `GetKeyboardLayout` 读取前台线程的语言层，再尽量解析活动 TSF profile。HKL 不能独自区分同一语言下的多个 TSF 输入法，因此持久状态优先保存完整 profile ID。
+
+对微信输入法和兼容 IME，内部模式通过 `ImmGetDefaultIMEWnd` 和 `WM_IME_CONTROL` 读取。在已验证的 Windows Terminal 场景中，`ImmGetContext` 可能返回空，而 default IME window 仍能读写 open status，因此实现不能只依赖 `ImmGetContext`。
 
 ### 5.3 恢复
 
 恢复分两层：
 
-1. profile 层：
-   - 普通 keyboard layout 用 `LoadKeyboardLayout` + 向焦点窗口发送 `WM_INPUTLANGCHANGEREQUEST`。
-   - TSF TIP 用 `ITfInputProcessorProfileMgr::ActivateProfile` 激活完整 CLSID/profile GUID，再向当前焦点线程请求对应输入语言，随后回读验证。
-2. IME 内部模式层：
-   - 找到焦点控件对应的 default IME window。
-   - 使用 `WM_IME_CONTROL / IMC_SETOPENSTATUS`。
-   - 只有能力探测确认支持时，才写 `IMC_SETCONVERSIONMODE` 与 `IMC_SETSENTENCEMODE`。
+1. 键盘布局使用 `LoadKeyboardLayout` 和 `WM_INPUTLANGCHANGEREQUEST`；TSF TIP 使用 `ITfInputProcessorProfileMgr::ActivateProfile` 激活完整 profile。
+2. profile 已正确激活后，再对支持的 IME 使用 `IMC_SETOPENSTATUS`；conversion 和 sentence 只有在目标状态要求写入时才处理。
 
-所有跨进程消息使用 `SendMessageTimeout`，设置很短的超时，避免某个卡死窗口拖住整个工具。切换后不弹窗、不激活其他窗口、不模拟文本输入。
+每一层都会先比较当前值。已经符合目标时不重复写入，也不会弹窗、抢焦点或模拟文本输入。
 
-## 6. 用户手动切换检测
+## 6. 前台事件和低频采样
 
-没有一个文档化的 Win32 广播能同时覆盖 Win+Space、语言栏点击、第三方 IME 自己的 Shift 切换和所有 TSF 应用。因此采用组合方案：
+前台窗口变化主要依靠 `SetWinEventHook(EVENT_SYSTEM_FOREGROUND)`，不是高频轮询。
 
-1. 前台窗口事件到达时立即进入短时采样。
-2. 低频兜底采样覆盖 Win+Space、语言栏点击和第三方 IME 自己的 Shift 切换，不注册或吞掉任何热键：
-   - 前台或焦点刚变化后的短时间窗口内约 250 ms。
-   - 稳定后约 1000 ms。
-   - 会话锁定、无有效前台窗口或工具 Disable 时停止采样。
-3. profile、IME open、conversion 三者形成快照；连续两次一致才认为是新的用户状态。
+Windows 没有一个文档化广播能同时覆盖 Win+Space、语言栏点击、第三方输入法内部快捷键和所有 TSF 应用。KeyPersona 因此保留一个低频 `SetTimer`：
 
-这种方式的常驻开销主要是几次很小的 Win32 查询，不需要 10–50 ms 的高频 `SetTimer`。
+- 前台窗口刚变化后的 burst 阶段默认每 250 ms 采样一次，持续 2 秒。
+- 稳定后默认每 1000 ms 采样一次。
+- Disable 时停止定时器。
+- 没有可识别的前台窗口时，定时器仍按当前周期触发，但本轮立即返回，不读写状态。
 
-## 7. 防止自动切换被当成用户学习
+当前实现没有单独监听 Windows 会话锁定事件。锁屏或安全桌面没有可识别窗口时不会学习状态，但采样定时器本身不会因为 session lock 被显式关闭。
 
-状态机维护以下字段：
+同一快照连续观察两次才学习；离开窗口时允许用最后一次有效读取立即收尾。快照包含 profile、`imeOpen`、conversion 和 sentence。
 
-- `applyGeneration`：每次程序主动恢复都递增。
-- `desiredState`：本次准备恢复的状态。
-- `suppressLearningUntil`：短暂抑制学习的截止时间。
-- `lastObservedState` / `stableCount`：采样防抖。
+## 7. 避免把自动恢复当成用户操作
 
-主动恢复流程：
+每次主动恢复都会记录目标状态、递增 `applyGeneration`，并为当前 HWND 设置 `suppressLearningUntil`。抑制期内不学习程序自己造成的瞬态变化。
 
-```text
-进入窗口
-  → 决定 desiredState
-  → 开启 learning suppression
-  → 写 profile
-  → 写 IME 内部模式
-  → 回读验证（最多补偿一次）
-  → 等待状态稳定
-  → 结束 suppression
-```
+恢复完成后会异步回读：
 
-抑制期内：
+- 实际状态与目标一致：记为恢复成功，不写新的学习记录。
+- 第一次不一致：最多补偿一次。
+- 仍不一致：写日志并停止重试。
+- 当前 profile 无法识别：不切换、不学习，等待后续重新发现或用户处理。
 
-- 与 `desiredState` 相同的变化只算应用成功，不写学习记录。
-- 不同的瞬态变化先忽略，超时后仍不一致才作为失败记录到日志。
-- 用户规则窗口永远不自动学习；如果用户手动改掉，下一次采样会恢复规则状态。
+命中用户规则的窗口不会学习手动改动。只要规则仍有效，采样发现偏离后会恢复规则状态。
 
-正常观察期内只有稳定状态变化才写入当前窗口记录，并延迟合并写盘。
+## 8. 规则、记忆和优先级
 
-## 8. 规则和优先级
+目标状态按以下顺序选择：
 
-最终优先级：
-
-1. 托盘创建并保存在运行时 `config.ini` 的当前窗口用户规则（`window-rule.*`）。
-2. 第一条匹配的应用用户规则（`rule.*`）。
-3. 当前会话 HWND 记录。
-4. 按持久 identity 找到的自动记忆。
+1. `[window-rule.*]` 当前窗口用户规则。
+2. `[rule.*]` 应用用户规则。
+3. 当前会话的 HWND 记忆。
+4. `state.ini` 中按持久 identity 找到的自动记忆。
 5. 全局默认状态。
 
-规则的 `exe`、完整路径、class、title regex 等已填写字段采用 AND；规则之间按显式 `priority` 和文件顺序匹配。
+当前窗口用户规则通过托盘创建，保存在 `config.ini`。它绑定当前窗口的持久 `identityKey`，不是 HWND：对 `app` 模式应用，它会覆盖同一 exe；对 `window` 模式应用，它会绑定 `exe + class + 标准化标题`。
 
-建议初始规则：
+应用规则选择最高 `priority`。优先级相同时，配置文件中后出现的匹配规则生效。规则可以只按 exe 匹配，也可以用 `pathRegex` 区分同名 EXE 的不同安装路径。
 
-```ini
-[rule.windows-terminal]
-enabled=1
-priority=100
-exe=WindowsTerminal.exe
-state=english-us
+“全局默认（无用户规则）”只表示当前窗口没有用户规则。选择它会删除命中的当前窗口规则或应用规则，但不会删除自动记忆。“清除当前窗口的自动记忆”只清除会话和 `state.ini` 里的学习结果，不删除用户规则。
 
-[rule.classic-powershell]
-enabled=1
-priority=100
-exe=powershell.exe
-state=english-us
+## 9. 持久化格式
 
-[rule.raycast]
-enabled=1
-priority=100
-exe=Raycast.exe
-state=english-us
-```
+### 9.1 `config.ini`
 
-注意：PowerShell 运行在 Windows Terminal 标签页里时，顶层窗口进程仍是 `WindowsTerminal.exe`，不能根据终端内部 shell 的 `powershell.exe` 区分；Windows Terminal 规则已经覆盖这种情况。经典独立控制台才会匹配 `powershell.exe`。
+`config.ini` 由用户维护，保存：
 
-## 9. 持久化
+- 全局开关、默认状态、采样和超时参数。
+- identity mode 列表和忽略规则。
+- 命名输入法状态，包括自动生成项。
+- `[rule.*]` 应用规则。
+- `[window-rule.*]` 当前窗口规则。
+- 中文模式反引号修正开关。
 
-使用两个 INI：
+程序通过托盘修改配置时会直接写回该文件，重新加载后生效。
 
-- `config.ini`：用户可编辑，保存默认状态、规则、identity policy、采样间隔、日志级别。
-- `state.ini`：程序管理，保存窗口身份、状态、最后见到时间和 schema version。
+### 9.2 `state.ini`
 
-选择 INI 的理由：AutoHotkey v2 原生支持，用户可读，不需要内置 JSON 解析器，能减少代码和常驻开销。
+`state.ini` 由程序维护，当前 `schemaVersion=2`。每条 `[window.<hash>]` 记录包含：
 
-状态写盘策略：
+- `identityKey`、`mode`、exe、路径、class 和标准化标题。
+- profile、`imeOpen`、conversion 和 sentence。
+- `source`，当前自动学习记录使用 `learned`。
+- `lastSeen`。
 
-- 内存中先更新；约 2 秒 debounce 合并多次变化。
-- 写到同目录临时文件，flush 后用 `MoveFileExW(REPLACE_EXISTING | WRITE_THROUGH)` 原子替换。
-- 正常退出前强制 flush。
-- 保留一个 `.bak`，schema 升级时可以恢复。
-- 不保存用户输入内容，只保存窗口元数据和输入法状态。
+状态先在内存更新，默认 2 秒内的变化合并写盘。写盘时先生成同目录临时文件，再用 `MoveFileExW(REPLACE_EXISTING | WRITE_THROUGH)` 原子替换；覆盖前保留 `state.ini.bak`。正常退出会强制 flush。
 
-## 10. 托盘菜单
+程序不保存用户输入内容，只保存窗口元数据和输入法状态。
 
-最低菜单项：
+## 10. 自启动和旧版本迁移
 
-- 启用自动切换
-- 开机自启动
-- 当前窗口：exe、身份模式、已观察状态、命中的规则
-- 设置全局默认输入法
-- 全局默认（无用户规则）
-- 设置当前窗口为 English US
-- 设置当前窗口为微信输入法（中文）
-- 设置当前窗口为微信输入法（英文）
-- 清除当前窗口的自动记忆
-- 打开配置文件
-- 打开状态文件
-- 中文模式反引号修正
-- 重新加载
-- 关于
-- 退出
+自启动使用当前用户标准 Startup 文件夹中的 `KeyPersona.lnk`，不需要管理员权限。
 
-左右键单击托盘图标都可以打开菜单。菜单操作后立即刷新当前窗口，但不会抢焦点或弹出常驻窗口；“关于”是用户主动打开的临时窗口。
+编译版快捷方式保存：
 
-“全局默认（无用户规则）”描述的是规则层：没有用户规则时保持勾选，重复点击不做任何事；取消已有规则时保留自动记忆。“清除当前窗口的自动记忆”只操作学习记录，不删除用户规则。
+- target：当前 `KeyPersona.exe` 的完整路径。
+- arguments：`--startup`。
+- working directory：EXE 所在目录。
 
-## 11. 模块划分
+源码运行模式则以当前 AutoHotkey 解释器为 target，把脚本路径放进 arguments。菜单勾选状态会同时核对 target、arguments 和 working directory；程序移动后，从新位置重新勾选即可重建正确快捷方式。
+
+升级旧名称时：
+
+- `LegacyMigration.ahk` 在同一运行目录内迁移旧日志名，并更新配置、状态、备份和日志中的旧产品标识。
+- `StartupManager.ahk` 把旧 Run 注册项或 `IME Memory.lnk` 迁移为 `KeyPersona.lnk`，然后删除旧入口，避免重复启动。
+- 关闭自启动时会同时删除当前入口和残留旧入口。
+
+## 11. 托盘和反引号处理
+
+托盘菜单由 `TrayMenu.ahk` 管理，左键和右键单击都能打开。菜单显示当前窗口、当前输入法、状态来源、全局默认值和版本，并提供启用、规则、自动记忆、自启动、配置文件、关于、重新加载和退出等操作。
+
+`BacktickKey.ahk` 只在以下条件同时满足时接管单独按下的 `SC029`：
+
+- 用户打开“中文模式反引号修正”。
+- 当前 profile 属于中文语言。
+- 当前 IME 的 `imeOpen=1`。
+- Ctrl、Alt、Win、Shift 都没有按下。
+
+接管后直接发送 Unicode 反引号。组合键和非中文状态保持原样。
+
+## 12. 代码和安装布局
+
+源码仓库：
 
 ```text
 KeyPersona/
-├─ KeyPersona.ahk          # 入口、生命周期
-├─ build.ps1              # 自检、编译、安装和重启
-├─ config.ini              # 用户配置
+├─ KeyPersona.ahk
+├─ build.ps1
+├─ config.ini                 # 默认配置模板
+├─ README.md
+├─ CHANGELOG.md
+├─ CONTRIBUTING.md
+├─ SECURITY.md
+├─ LICENSE
+├─ AGENTS.md
 ├─ assets/
-│  ├─ KeyPersona.ico       # 多尺寸程序图标
-│  └─ KeyPersona-icon.png  # 图标主稿
+│  ├─ KeyPersona.ico
+│  └─ KeyPersona-icon.png
+├─ docs/
+│  ├─ ARCHITECTURE.md
+│  ├─ RELEASING.md
+│  └─ releases/
+│     └─ v1.0.0.md
 ├─ lib/
-│  ├─ AppInfo.ahk          # 产品名称、文件名、作者和编译元数据
-│  ├─ LegacyMigration.ahk  # 旧名称、日志和安装状态迁移
-│  ├─ App.ahk              # 协调状态机
-│  ├─ Config.ahk           # 配置读取和默认状态写入
-│  ├─ WinEventHook.ahk     # foreground/focus 事件
-│  ├─ WindowIdentity.ahk   # 宿主解析与持久 key
-│  ├─ InputProfiles.ahk    # profile 枚举、TSF/HKL 切换
-│  ├─ ImeMode.ahk          # IME open/conversion 读写
-│  ├─ BacktickKey.ahk      # 中文模式反引号条件热键
-│  ├─ Rules.ahk            # 规则匹配
-│  ├─ StateStore.ahk       # 状态 INI、原子写盘、迁移
-│  ├─ StartupManager.ahk   # 当前用户登录自启动
-│  ├─ AboutDialog.ahk      # 关于窗口
-│  ├─ TrayMenu.ahk         # 托盘交互
-│  ├─ SelfTest.ahk         # 自检
-│  └─ Utils.ahk            # 通用函数
-├─ tools/
-│  └─ KeyPersona-probe.ahk # 环境能力探针
-└─ README.md
+│  ├─ AppInfo.ahk
+│  ├─ LegacyMigration.ahk
+│  ├─ App.ahk
+│  ├─ Config.ahk
+│  ├─ WindowIdentity.ahk
+│  ├─ WinEventHook.ahk
+│  ├─ InputProfiles.ahk
+│  ├─ ImeMode.ahk
+│  ├─ Rules.ahk
+│  ├─ StateStore.ahk
+│  ├─ StartupManager.ahk
+│  ├─ TrayMenu.ahk
+│  ├─ AboutDialog.ahk
+│  ├─ BacktickKey.ahk
+│  ├─ SelfTest.ahk
+│  └─ Utils.ahk
+└─ tools/
+   └─ KeyPersona-probe.ahk
 ```
 
-运行时生成的 `state.ini`、日志和编译后的 EXE 位于安装根目录，不属于源码仓库。
+安装目录只需要 `KeyPersona.exe`。运行时会按需在同一目录创建或更新 `config.ini`、`state.ini`、`state.ini.bak` 和日志，因此该目录必须允许当前用户写入。
 
-依赖方向保持单向，Win32 封装和业务策略分开，后续替换某个输入法实现时不会碰窗口记忆层。
+`AppInfo.ahk` 是产品名、文件名、作者、版本和编译元数据的单一来源。构建脚本从这里读取源码名、EXE 名、配置名、产品名和版本号，避免安装位置或仓库目录名写死在脚本中。
 
-## 12. 失败边界与降级
+## 13. 构建、测试和发布包
 
-- 第三方 IME 若不能可靠读写内部模式：仍记忆和恢复完整 profile，内部模式显示 `unknown`，不模拟输入法私有快捷键。
-- 高完整性（管理员）窗口受 UIPI 限制：普通权限脚本可能能观察但不能发送切换消息。本机当前有管理员运行的 VS Code，因此需要提供普通版和 UIAccess/管理员测试说明；默认不建议整日以管理员权限运行。
-- UAC 安全桌面、登录界面、密码安全控件不参与记忆。
-- 卡死窗口：跨进程调用超时后跳过，不阻塞切换。
-- 同标题浏览器窗口：跨重启无稳定 Win32 ID，需用户 title 规则或接受 app 级回退。
+`build.ps1` 与仓库和安装目录的绝对位置无关。默认流程：
 
-## 13. 验证标准
+1. 用 AutoHotkey v2 运行源码自检。
+2. 用 Ahk2Exe 和指定的 64 位 AutoHotkey 运行时编译 `dist\KeyPersona.exe`。
+3. 运行编译后自检。
+4. 在临时目录执行 2 秒 observe-only 隔离烟雾测试。
+5. 如果指定 `-InstallDirectory`，复制 EXE；构建前程序正在运行时，安装后重新启动。
+6. 如果指定 `-Package`，生成版本化 ZIP 和 `SHA256SUMS.txt`。
 
-实现不能只通过语法检查，应至少覆盖：
+构建脚本按“显式参数 → 环境变量 → 标准安装目录 → PATH”查找 AutoHotkey 运行时；Ahk2Exe 另外支持仓库根目录的 `build-tools`。发布 ZIP 包含 EXE、`config.example.ini`、README、CHANGELOG 和 LICENSE，不包含用户的运行时文件。
 
-1. English US ↔ 微信输入法 profile 切换。
-2. 微信输入法中文 ↔ 英文内部模式。
-3. Alt+Tab、鼠标点击、Win+Tab 后恢复。
-4. Edge 两个窗口、Explorer、Windows Terminal、Raycast。
-5. 手动 Win+Space、Shift、语言栏点击后自动学习。
-6. 重启脚本和重启 Windows 后恢复。
-7. 用户规则不被用户临时切换覆盖。
-8. 卡死/无响应窗口不会卡住脚本。
-9. 运行 30 分钟的 CPU、私有内存与句柄数无持续增长。
-10. `.ahk` 直接运行和编译 `.exe` 两种交付方式。
+正式发布步骤见 `docs/RELEASING.md`。
+
+## 14. 已知边界
+
+- 第三方 IME 若不能可靠读写内部模式，只恢复完整 profile。
+- 普通权限进程受 UIPI 限制，可能无法向管理员权限窗口发送输入法消息；不建议为此让 KeyPersona 长期以管理员权限运行。
+- UAC 安全桌面、登录界面和密码安全控件不参与记忆。
+- 同标题浏览器窗口跨重启时无法可靠区分。
+- 用户配置按设计放在程序目录；只读目录、尚未挂载的网络盘或登录时未就绪的移动盘会影响保存和自启动。
+- 发布文件没有数字签名，Windows SmartScreen 或安全软件可能显示提示。
+
+## 15. 当前验证范围
+
+实际验证环境使用 AutoHotkey `2.0.28` 64 位，输入 profile 包括：
+
+- English US：`0409:00000409`。
+- 微信输入法 2.1.4.6：`0804:{86598FB9-66A2-463E-B9C2-AEB906D477AD}{607FDF85-FCC8-4DBD-A365-41296F980C9C}`。
+
+完整自检覆盖配置、规则、动态 profile、重复与失效状态清理、旧名称迁移、状态原子写入和备份恢复。发布前还应人工验证 Alt+Tab、鼠标切换、Win+Tab、Win+Space、语言栏、输入法内部切换、自启动和重启恢复。
