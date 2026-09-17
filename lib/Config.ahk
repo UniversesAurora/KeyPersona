@@ -3,9 +3,9 @@
 class ImeMemoryConfig {
     __New(baseDir) {
         this.BaseDir := baseDir
-        this.Path := baseDir "\config.ini"
-        this.StatePath := baseDir "\state.ini"
-        this.LogPath := baseDir "\ime-memory.log"
+        this.Path := baseDir "\" AppInfo.ConfigFile
+        this.StatePath := baseDir "\" AppInfo.StateFile
+        this.LogPath := baseDir "\" AppInfo.LogFile
         this.EnsureDefaultFile()
         this.Reload()
     }
@@ -23,7 +23,7 @@ class ImeMemoryConfig {
         this.MessageTimeoutMs := ParseInt(this.Doc.Get("general", "messageTimeoutMs", "120"), 120, 20, 1000)
         this.LogLevel := this.Doc.Get("general", "logLevel", "info")
         this.WindowModeExe := SplitCsv(this.Doc.Get("identity", "windowModeExe", "msedge.exe,chrome.exe,firefox.exe,explorer.exe,zettlr.exe"))
-        this.IgnoreExe := SplitCsv(this.Doc.Get("identity", "ignoreExe", "ime-memory.exe,autohotkey64.exe,autohotkey32.exe,textinputhost.exe,searchhost.exe,startmenuexperiencehost.exe"))
+        this.IgnoreExe := SplitCsv(this.Doc.Get("identity", "ignoreExe", "autohotkey64.exe,autohotkey32.exe,textinputhost.exe,searchhost.exe,startmenuexperiencehost.exe"))
         this.IgnoreClassRegex := this.Doc.Get("identity", "ignoreClassRegex", "i)^(Progman|WorkerW|Shell_(Secondary)?TrayWnd|TopLevelWindowForOverflowXamlIsland|NotifyIconOverflowWindow|XamlExplorerHostIslandWindow|tooltips_class32|IME)$")
         this.BacktickInChinese := ParseBool(this.Doc.Get("typing", "backtickInChinese", "0"), false)
         this.NamedStates := this.LoadNamedStates()
@@ -158,7 +158,7 @@ class ImeMemoryConfig {
     EnsureDefaultFile() {
         if FileExist(this.Path)
             return
-        template := "; IME Memory 用户配置。修改后从托盘选择“重新加载”。`n"
+        template := "; " AppInfo.Name " 用户配置。修改后从托盘选择“重新加载”。`n"
             . "; profile 可从托盘状态或 tools\ime-probe.ahk 的输出中复制。`n`n"
             . "[general]`n"
             . "enabled=1`n"
@@ -173,7 +173,7 @@ class ImeMemoryConfig {
             . "logLevel=info`n`n"
             . "[identity]`n"
             . "windowModeExe=msedge.exe,chrome.exe,firefox.exe,explorer.exe,zettlr.exe`n"
-            . "ignoreExe=ime-memory.exe,autohotkey64.exe,autohotkey32.exe,textinputhost.exe,searchhost.exe,startmenuexperiencehost.exe`n"
+            . "ignoreExe=autohotkey64.exe,autohotkey32.exe,textinputhost.exe,searchhost.exe,startmenuexperiencehost.exe`n"
             . "ignoreClassRegex=i)^(Progman|WorkerW|Shell_(Secondary)?TrayWnd|TopLevelWindowForOverflowXamlIsland|NotifyIconOverflowWindow|XamlExplorerHostIslandWindow|tooltips_class32|IME)$`n`n"
             . "[typing]`n"
             . "backtickInChinese=0`n`n"

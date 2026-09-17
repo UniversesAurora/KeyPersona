@@ -34,7 +34,7 @@ class ImeMemoryApp {
         this.Started := false
         this.ShuttingDown := false
         this.EventGui := Gui("+ToolWindow -Caption")
-        this.EventGui.Title := "IME Memory Event Sink"
+        this.EventGui.Title := AppInfo.Name " Event Sink"
         this.EventGui.Show("Hide")
         this.MessageCallback := ObjBindMethod(this, "OnWinEventMessage")
         this.PollCallback := ObjBindMethod(this, "Poll")
@@ -51,7 +51,7 @@ class ImeMemoryApp {
         OnMessage(ImeMemoryApp.EVENT_MESSAGE, this.MessageCallback)
         this.Hook.Start()
         this.Started := true
-        this.Logger.Info("IME Memory started" (this.ObserveOnly ? " in observe-only mode" : ""))
+        this.Logger.Info(AppInfo.Name " started" (this.ObserveOnly ? " in observe-only mode" : ""))
         this.Tray.Refresh(true)
         if this.Enabled {
             this.SetPollPeriod(this.Config.ActivePollMs)
@@ -413,7 +413,7 @@ class ImeMemoryApp {
         if !state.Count
             return
         if !this.Config.SetWindowRule(this.CurrentWindow, stateName) {
-            TrayTip("无法保存当前窗口的用户规则。", "IME Memory", "Iconx")
+            TrayTip("无法保存当前窗口的用户规则。", AppInfo.Name, "Iconx")
             return
         }
         this.RefreshRuleEngine()
@@ -471,7 +471,7 @@ class ImeMemoryApp {
         if !this.ObserveOnly
             this.ApplyState(this.CurrentWindow, desired, "remove-user-rule")
         if removedCount
-            TrayTip("已移除当前窗口的用户规则；自动记忆保持不变。", "IME Memory", "Mute")
+            TrayTip("已移除当前窗口的用户规则；自动记忆保持不变。", AppInfo.Name, "Mute")
         this.Tray.Refresh(true)
     }
 
@@ -479,17 +479,17 @@ class ImeMemoryApp {
         if !this.Config.SetDefaultState(stateName)
             return
         this.Logger.Info("Default state changed to " stateName)
-        TrayTip("全局默认输入法已设置为 " stateName "。`n仅用于尚未记录的窗口。", "IME Memory", "Mute")
+        TrayTip("全局默认输入法已设置为 " stateName "。`n仅用于尚未记录的窗口。", AppInfo.Name, "Mute")
         this.Tray.Refresh(true)
     }
 
     ToggleStartup(*) {
         try {
             enabled := this.Startup.Toggle()
-            TrayTip(enabled ? "已启用当前用户登录时自动启动。" : "已关闭开机自启动。", "IME Memory", "Mute")
+            TrayTip(enabled ? "已启用当前用户登录时自动启动。" : "已关闭开机自启动。", AppInfo.Name, "Mute")
         } catch Error as toggleFailure {
             this.Logger.Error("Startup toggle failed: " toggleFailure.Message)
-            TrayTip("无法修改开机自启动：" toggleFailure.Message, "IME Memory", "Iconx")
+            TrayTip("无法修改开机自启动：" toggleFailure.Message, AppInfo.Name, "Iconx")
         }
         this.Tray.Refresh(true)
     }
@@ -498,7 +498,7 @@ class ImeMemoryApp {
         enabled := this.Config.SetBacktickInChinese(!this.Config.BacktickInChinese)
         this.Logger.Info("Chinese-mode backtick replacement " (enabled ? "enabled" : "disabled"))
         TrayTip(enabled ? "已开启：中文输入模式下，单独按反引号键将直接输入反引号。"
-            : "已关闭中文模式反引号修正。", "IME Memory", "Mute")
+            : "已关闭中文模式反引号修正。", AppInfo.Name, "Mute")
         this.Tray.Refresh(true)
     }
 
@@ -507,7 +507,7 @@ class ImeMemoryApp {
             return
         saved := this.Store.Find(this.CurrentWindow)
         if (!saved.Count || MapGet(saved, "source", "learned") = "manual") {
-            TrayTip("当前窗口没有可清除的自动记忆。", "IME Memory", "Mute")
+            TrayTip("当前窗口没有可清除的自动记忆。", AppInfo.Name, "Mute")
             return
         }
         hwndKey := this.CurrentWindow["hwnd"] ""
@@ -539,6 +539,6 @@ class ImeMemoryApp {
         try this.BacktickKey.Dispose()
         try this.Tray.Dispose()
         try this.Store.Flush()
-        this.Logger.Info("IME Memory stopped")
+        this.Logger.Info(AppInfo.Name " stopped")
     }
 }

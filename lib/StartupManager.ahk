@@ -2,8 +2,8 @@
 
 class StartupManager {
     static LegacyRunKey := "HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run"
-    static ValueName := "IME Memory"
-    static ShortcutName := "IME Memory.lnk"
+    static ValueName := AppInfo.LegacyStartupValueName
+    static ShortcutName := AppInfo.StartupShortcutName
 
     __New(logger) {
         this.Logger := logger
@@ -54,13 +54,13 @@ class StartupManager {
 
     Enable() {
         shortcut := this.ShortcutPath()
-        icon := A_IsCompiled ? A_ScriptFullPath : A_ScriptDir "\assets\ime-memory.ico"
+        icon := A_IsCompiled ? A_ScriptFullPath : A_ScriptDir "\" AppInfo.IconFile
         FileCreateShortcut(
             this.TargetPath(),
             shortcut,
             this.WorkingDirectory(),
             this.Arguments(),
-            "IME Memory",
+            AppInfo.Name,
             icon
         )
         if !this.IsEnabled() {

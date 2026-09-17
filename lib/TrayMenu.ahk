@@ -12,7 +12,7 @@ class TrayMenuController {
         this.TrayMessageCallback := ObjBindMethod(this, "OnTrayMessage")
         this.ShowMenuCallback := ObjBindMethod(this, "ShowMenu")
         OnMessage(0x0404, this.TrayMessageCallback)
-        A_IconTip := "IME Memory"
+        A_IconTip := AppInfo.Name
     }
 
     Refresh(force := false) {
@@ -95,7 +95,7 @@ class TrayMenuController {
         tray.Add("打开状态文件", ObjBindMethod(this, "OpenState"))
         tray.Add("重新加载", ObjBindMethod(this.App, "ReloadConfiguration"))
         tray.Add()
-        tray.Add("关于 IME Memory", ObjBindMethod(this, "ShowAbout"))
+        tray.Add("关于 " AppInfo.Name, ObjBindMethod(this, "ShowAbout"))
         tray.Add("退出", ObjBindMethod(this, "ExitApplication"))
     }
 
@@ -201,7 +201,7 @@ class TrayMenuController {
         if FileExist(this.App.Config.StatePath)
             Run(this.App.Config.StatePath)
         else
-            TrayTip("还没有自动记忆记录。", "IME Memory")
+            TrayTip("还没有自动记忆记录。", AppInfo.Name)
     }
 
     ExitApplication(*) {

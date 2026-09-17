@@ -32,12 +32,7 @@ ApplicationVersion() {
     if A_IsCompiled {
         try return FileGetVersion(A_ScriptFullPath)
     }
-    try {
-        source := FileRead(A_ScriptFullPath, "UTF-8")
-        if RegExMatch(source, "m)^;@Ahk2Exe-SetVersion\s+([^\r\n]+)$", &match)
-            return Trim(match[1])
-    }
-    return "开发版"
+    return AppInfo.Version != "" ? AppInfo.Version : "开发版"
 }
 
 Hex(value, width := 0) {

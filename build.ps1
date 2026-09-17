@@ -11,10 +11,21 @@ $ErrorActionPreference = 'Stop'
 
 $sourceRoot = [System.IO.Path]::GetFullPath($PSScriptRoot)
 $installRoot = [System.IO.Path]::GetFullPath((Split-Path -Parent $sourceRoot))
-$sourcePath = Join-Path $sourceRoot 'ime-memory.ahk'
-$outputPath = Join-Path $installRoot 'ime-memory.exe'
-$defaultConfigPath = Join-Path $sourceRoot 'config.ini'
-$installedConfigPath = Join-Path $installRoot 'config.ini'
+$appInfoPath = Join-Path $sourceRoot 'lib\AppInfo.ahk'
+$appInfoText = Get-Content -LiteralPath $appInfoPath -Raw
+function Get-AppInfoValue {
+    param([Parameter(Mandatory)] [string]$Name)
+    $pattern = '(?m)^\s*static\s+' + [regex]::Escape($Name) + '\s*:=\s*"([^"]+)"\s*$'
+    $match = [regex]::Match($appInfoText, $pattern)
+    if (-not $match.Success) {
+        throw "AppInfo.$Name was not found in $appInfoPath"
+    }
+    return $match.Groups[1].Value
+}
+$sourcePath = Join-Path $sourceRoot (Get-AppInfoValue -Name 'SourceFile')
+$outputPath = Join-Path $installRoot (Get-AppInfoValue -Name 'ExecutableFile')
+$defaultConfigPath = Join-Path $sourceRoot (Get-AppInfoValue -Name 'ConfigFile')
+$installedConfigPath = Join-Path $installRoot (Get-AppInfoValue -Name 'ConfigFile')
 $compilerPath = Join-Path $installRoot 'build-tools\Ahk2Exe.exe'
 $runtimeOverride = [Environment]::GetEnvironmentVariable('IME_MEMORY_AHK_RUNTIME')
 $runtimeCommand = Get-Command AutoHotkey64.exe -ErrorAction SilentlyContinue
@@ -65,9 +76,11 @@ function Invoke-CheckedProcess {
     if ($stderr) { Write-Verbose $stderr }
 }
 
+$executableName = [System.IO.Path]::GetFileName($outputPath)
 $runningInstances = @(
-    Get-CimInstance Win32_Process -Filter "Name = 'ime-memory.exe'" -ErrorAction SilentlyContinue |
+    Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
         Where-Object {
+            $_.Name -ieq $executableName -and
             $_.ExecutablePath -and
             [System.IO.Path]::GetFullPath($_.ExecutablePath).Equals(
                 $outputPath,

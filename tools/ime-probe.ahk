@@ -1,6 +1,7 @@
 #Requires AutoHotkey v2.0
 #SingleInstance Force
 
+#Include ..\lib\AppInfo.ahk
 #Include ..\lib\Utils.ahk
 #Include ..\lib\Config.ahk
 #Include ..\lib\WindowIdentity.ahk
@@ -13,7 +14,7 @@ probeLogger := Logger(probeConfig.LogPath, "off")
 identityApi := WindowIdentity(probeConfig, probeLogger)
 profileApi := InputProfiles(identityApi, probeConfig, probeLogger)
 currentWindow := identityApi.Resolve()
-output := "IME Memory probe`nGenerated: " FormatTime(, "yyyy-MM-dd HH:mm:ss") "`n`n"
+output := AppInfo.Name " probe`nGenerated: " FormatTime(, "yyyy-MM-dd HH:mm:ss") "`n`n"
 output .= "Enabled profiles:`n"
 for profileId, profile in profileApi.Catalog {
     output .= "- " profile["id"] "`n"

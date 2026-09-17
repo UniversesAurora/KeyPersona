@@ -39,6 +39,8 @@ pwsh -NoProfile -File .\build.ps1
 
 日常修改只提交 commit，不自动发布新版本。正式发布历史见 [CHANGELOG.md](CHANGELOG.md)，发布步骤和约束见 [RELEASING.md](RELEASING.md)。
 
+产品名称、程序文件名、配置文件名、图标、作者和启动项名称集中在 `lib/AppInfo.ahk`。改名时优先修改这一处；构建脚本也从这里读取源码与输出文件名。
+
 ## 默认行为
 
 - 未记录过的窗口使用 `wetype-chinese`，即微信输入法中文模式。

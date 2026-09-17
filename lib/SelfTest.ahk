@@ -22,6 +22,7 @@ RunSelfTests(baseDir) {
     AssertTest(!ShouldReplaceBacktickState(chineseProfile, "0"), "Backtick pass-through in IME English mode", failures)
     AssertTest(!ShouldReplaceBacktickState(englishProfile, "1"), "Backtick pass-through for non-Chinese input", failures)
     AssertTest(!ShouldReplaceBacktickState(chineseProfile, "1", false), "Backtick option disables replacement", failures)
+    AssertTest(AppInfo.Name != "" && AppInfo.ExecutableFile != "", "Central application identity", failures)
     noOpProbe := ImeModeNoOpProbe()
     noOpState := Map("imeOpen", "1", "conversion", "0x1", "sentence", "0x8")
     AssertTest(noOpProbe.Apply(Map(), noOpState) && noOpProbe.SetCalls = 0,
@@ -52,7 +53,7 @@ RunSelfTests(baseDir) {
     tempConfigDir := A_Temp "\ime-memory-config-selftest-" DllCall("kernel32\GetCurrentProcessId", "UInt")
     try DirDelete(tempConfigDir, true)
     DirCreate(tempConfigDir)
-    FileCopy(baseDir "\config.ini", tempConfigDir "\config.ini", true)
+    FileCopy(baseDir "\" AppInfo.ConfigFile, tempConfigDir "\" AppInfo.ConfigFile, true)
     editableConfig := ImeMemoryConfig(tempConfigDir)
     AssertTest(editableConfig.SetDefaultState("english-us"), "Default state write", failures)
     AssertTest(editableConfig.SetBacktickInChinese(true), "Backtick option write", failures)

@@ -13,6 +13,7 @@
 - 通过 TSF profile 标识保存具体输入法；HKL 只作为语言层和兼容路径，不能独自区分同一语言下的多个 TSF 输入法。
 - 用事件驱动加低频、可自适应采样检测用户手动切换，避免几十毫秒一次的高频轮询。
 - 配置和学习状态分别写入 `config.ini` 与 `state.ini`；机器状态采用临时文件加原子替换，避免异常退出留下半个文件。
+- 产品标识和产物名称集中在 `lib/AppInfo.ahk`，运行时界面、自启动和构建脚本共用这些值。
 
 验证环境：
 
@@ -268,6 +269,7 @@ ime-memory/
 │  ├─ ime-memory.ico       # 多尺寸程序图标
 │  └─ ime-memory-icon.png  # 图标主稿
 ├─ lib/
+│  ├─ AppInfo.ahk          # 产品名称、文件名、作者和编译元数据
 │  ├─ App.ahk              # 协调状态机
 │  ├─ Config.ahk           # 配置读取和默认状态写入
 │  ├─ WinEventHook.ahk     # foreground/focus 事件
