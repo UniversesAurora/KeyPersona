@@ -1,3 +1,5 @@
 /self-test.log
-/fatal-error.log
-/tools/ime-probe.txt
+/KeyPersona-error.log
+/tools/KeyPersona-probe.txt
+/dist/
+/build-tools/
