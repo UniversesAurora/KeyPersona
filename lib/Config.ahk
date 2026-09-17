@@ -39,6 +39,7 @@ class ImeMemoryConfig {
             state := Map(
                 "name", match[1],
                 "description", MapGet(values, "description", ""),
+                "generated", ParseBool(MapGet(values, "generated", "0"), false),
                 "profile", MapGet(values, "profile", "unknown"),
                 "imeOpen", MapGet(values, "imeOpen", "unknown"),
                 "conversion", MapGet(values, "conversion", "preserve"),
@@ -49,9 +50,40 @@ class ImeMemoryConfig {
         return states
     }
 
-    EnsureDiscoveredStates(catalog) {
-        if !IsObject(catalog)
-            return 0
+    ReconcileDiscoveredStates(catalog) {
+        result := Map(
+            "added", 0,
+            "removedStates", 0,
+            "removedRules", 0,
+            "repointedRules", 0,
+            "defaultChanged", false,
+            "authoritative", false,
+            "validProfiles", Map()
+        )
+        if !IsObject(catalog) || catalog.Count = 0
+            return result
+        for catalogKey, profile in catalog
+            result["validProfiles"][StrLower(MapGet(profile, "id", catalogKey))] := true
+        result["authoritative"] := true
+
+        result["added"] := this.AddDiscoveredStates(catalog)
+        cleanup := this.CleanupDiscoveredStates(result["validProfiles"])
+        for field in ["removedStates", "removedRules", "repointedRules"]
+            result[field] := cleanup[field]
+
+        if (!this.NamedStates.Has(this.DefaultState)
+            || !result["validProfiles"].Has(StrLower(MapGet(this.GetNamedState(this.DefaultState), "profile", "")))) {
+            fallback := this.FindValidDefaultState(catalog)
+            if (fallback != "" && fallback != this.DefaultState) {
+                IniWrite(fallback, this.Path, "general", "defaultState")
+                this.Reload()
+                result["defaultChanged"] := true
+            }
+        }
+        return result
+    }
+
+    AddDiscoveredStates(catalog) {
         existing := Map()
         for stateName, state in this.NamedStates {
             key := this.DiscoveredStateKey(
@@ -81,6 +113,89 @@ class ImeMemoryConfig {
         return added
     }
 
+    CleanupDiscoveredStates(validProfiles) {
+        invalid := Map()
+        canonicalByKey := Map()
+        duplicates := Map()
+        for generatedPass in [false, true] {
+            for stateName, state in this.NamedStates {
+                profileId := StrLower(MapGet(state, "profile", ""))
+                if !validProfiles.Has(profileId) {
+                    invalid[stateName] := true
+                    continue
+                }
+                if (MapGet(state, "generated", false) != generatedPass)
+                    continue
+                key := this.DiscoveredStateKey(profileId, MapGet(state, "imeOpen", "unknown"))
+                if canonicalByKey.Has(key)
+                    duplicates[stateName] := canonicalByKey[key]
+                else
+                    canonicalByKey[key] := stateName
+            }
+        }
+
+        removedRules := 0
+        repointedRules := 0
+        for section, values in this.Doc.Sections {
+            if !RegExMatch(section, "i)^(rule\.|window-rule\.)")
+                continue
+            stateName := MapGet(values, "state", "")
+            if invalid.Has(stateName) {
+                IniDelete(this.Path, section)
+                removedRules += 1
+            } else if duplicates.Has(stateName) {
+                IniWrite(duplicates[stateName], this.Path, section, "state")
+                repointedRules += 1
+            }
+        }
+
+        if duplicates.Has(this.DefaultState) {
+            IniWrite(duplicates[this.DefaultState], this.Path, "general", "defaultState")
+            this.DefaultState := duplicates[this.DefaultState]
+        }
+
+        removedStates := 0
+        for stateName in invalid {
+            IniDelete(this.Path, "state." stateName)
+            removedStates += 1
+        }
+        for stateName in duplicates {
+            IniDelete(this.Path, "state." stateName)
+            removedStates += 1
+        }
+        if (removedRules || repointedRules || removedStates)
+            this.Reload()
+        return Map(
+            "removedStates", removedStates,
+            "removedRules", removedRules,
+            "repointedRules", repointedRules
+        )
+    }
+
+    FindValidDefaultState(catalog) {
+        chineseState := ""
+        englishState := ""
+        firstState := ""
+        for stateName, state in this.NamedStates {
+            profileId := StrLower(MapGet(state, "profile", ""))
+            if !catalog.Has(profileId)
+                continue
+            if (firstState = "")
+                firstState := stateName
+            if (profileId = "0409:00000409")
+                englishState := stateName
+            profile := catalog[profileId]
+            languageState := Map(
+                "profile", MapGet(profile, "id", ""),
+                "langId", Hex(MapGet(profile, "langId", 0), 4)
+            )
+            if (chineseState = "" && IsChineseLanguageState(languageState)
+                && MapGet(state, "imeOpen", "unknown") = "1")
+                chineseState := stateName
+        }
+        return chineseState != "" ? chineseState : englishState != "" ? englishState : firstState
+    }
+
     EnsureDiscoveredState(profile, imeOpen, suffix, existing) {
         profileId := MapGet(profile, "id", "")
         key := this.DiscoveredStateKey(profileId, imeOpen)
@@ -93,6 +208,7 @@ class ImeMemoryConfig {
         description := StrReplace(MapGet(profile, "description", profileId), "`n", " ")
         description := StrReplace(description, "`r", " ")
         IniWrite(description, this.Path, section, "description")
+        IniWrite("1", this.Path, section, "generated")
         IniWrite(profileId, this.Path, section, "profile")
         IniWrite(imeOpen, this.Path, section, "imeOpen")
         IniWrite("preserve", this.Path, section, "conversion")
@@ -102,7 +218,10 @@ class ImeMemoryConfig {
     }
 
     DiscoveredStateKey(profileId, imeOpen) {
-        return StrLower(Trim(profileId "")) "|" StrLower(Trim(imeOpen ""))
+        normalizedOpen := StrLower(Trim(imeOpen ""))
+        if (normalizedOpen != "0" && normalizedOpen != "1")
+            normalizedOpen := "preserve"
+        return StrLower(Trim(profileId "")) "|" normalizedOpen
     }
 
     LoadPrefixedSections(prefix) {
