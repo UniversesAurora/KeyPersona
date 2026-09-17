@@ -13,6 +13,7 @@ class InputProfiles {
         this.ByLanguage := Map()
         this.Revision := 0
         this.LastCatalogRefreshTick := 0
+        this.LastRefreshSucceeded := false
         this.Manager := ""
         try this.Manager := ComObject(InputProfiles.CLSID_MANAGER, InputProfiles.IID_MANAGER)
         catch Error as err
@@ -25,6 +26,7 @@ class InputProfiles {
         this.ByLanguage := Map()
         this.LastCatalogRefreshTick := TickCount64()
         this.Revision += 1
+        this.LastRefreshSucceeded := true
         root := "HKEY_CURRENT_USER\Control Panel\International\User Profile"
         try {
             Loop Reg root, "K" {
@@ -54,6 +56,7 @@ class InputProfiles {
                 }
             }
         } catch Error as err {
+            this.LastRefreshSucceeded := false
             this.Logger.Warn("Input profile discovery failed: " err.Message)
         }
         this.Logger.Info("Discovered " this.Catalog.Count " enabled input profile(s)")

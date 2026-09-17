@@ -98,6 +98,26 @@ class StateStore {
         return false
     }
 
+    RemoveInvalidProfiles(validProfiles) {
+        removed := 0
+        invalidKeys := []
+        for identityKey, record in this.Records {
+            profileId := StrLower(Trim(MapGet(record, "profile", "") ""))
+            isUnknown := profileId = "" || profileId = "unknown" || RegExMatch(profileId, ":unknown$")
+            if isUnknown
+                invalidKeys.Push(identityKey)
+            else if !validProfiles.Has(profileId)
+                invalidKeys.Push(identityKey)
+        }
+        for identityKey in invalidKeys {
+            this.Records.Delete(identityKey)
+            removed += 1
+        }
+        if removed
+            this.Dirty := true
+        return removed
+    }
+
     StateFromRecord(record) {
         return Map(
             "profile", MapGet(record, "profile", "unknown"),

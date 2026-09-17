@@ -60,6 +60,14 @@ RunSelfTests(baseDir) {
     discoveredChineseId := "0804:{11111111-1111-1111-1111-111111111111}{22222222-2222-2222-2222-222222222222}"
     discoveredKeyboardId := "0411:00000411"
     discoveredCatalog := Map(
+        "0409:00000409", Map(
+            "id", "0409:00000409", "kind", "keyboard", "langId", 0x0409,
+            "description", "English (United States) - US"
+        ),
+        "0804:{86598fb9-66a2-463e-b9c2-aeb906d477ad}{607fdf85-fcc8-4dbd-a365-41296f980c9c}", Map(
+            "id", "0804:{86598FB9-66A2-463E-B9C2-AEB906D477AD}{607FDF85-FCC8-4DBD-A365-41296F980C9C}",
+            "kind", "tip", "langId", 0x0804, "description", "WeType"
+        ),
         StrLower(discoveredChineseId), Map(
             "id", discoveredChineseId, "kind", "tip", "langId", 0x0804,
             "description", "Test Chinese IME"
@@ -69,20 +77,40 @@ RunSelfTests(baseDir) {
             "description", "Test Japanese Keyboard"
         )
     )
-    AssertTest(editableConfig.EnsureDiscoveredStates(discoveredCatalog) = 3,
+    firstReconcile := editableConfig.ReconcileDiscoveredStates(discoveredCatalog)
+    AssertTest(firstReconcile["added"] = 3,
         "Discovered input states are generated", failures)
-    AssertTest(editableConfig.EnsureDiscoveredStates(discoveredCatalog) = 0,
+    secondReconcile := editableConfig.ReconcileDiscoveredStates(discoveredCatalog)
+    AssertTest(secondReconcile["added"] = 0 && secondReconcile["removedStates"] = 0,
         "Discovered input state generation is idempotent", failures)
     generatedChineseModes := 0
     generatedKeyboardStates := 0
+    generatedKeyboardName := ""
     for generatedStateName, generatedState in editableConfig.NamedStates {
         if (StrLower(MapGet(generatedState, "profile", "")) = StrLower(discoveredChineseId))
             generatedChineseModes += 1
-        if (StrLower(MapGet(generatedState, "profile", "")) = StrLower(discoveredKeyboardId))
+        if (StrLower(MapGet(generatedState, "profile", "")) = StrLower(discoveredKeyboardId)) {
             generatedKeyboardStates += 1
+            generatedKeyboardName := generatedStateName
+        }
     }
     AssertTest(generatedChineseModes = 2, "Chinese TIP gets Chinese and English states", failures)
     AssertTest(generatedKeyboardStates = 1, "Keyboard layout gets one generated state", failures)
+    IniWrite("Manual Japanese", editableConfig.Path, "state.manual-japanese", "description")
+    IniWrite(discoveredKeyboardId, editableConfig.Path, "state.manual-japanese", "profile")
+    IniWrite("unknown", editableConfig.Path, "state.manual-japanese", "imeOpen")
+    IniWrite("preserve", editableConfig.Path, "state.manual-japanese", "conversion")
+    IniWrite("preserve", editableConfig.Path, "state.manual-japanese", "sentence")
+    IniWrite("1", editableConfig.Path, "rule.duplicate", "enabled")
+    IniWrite("duplicate.exe", editableConfig.Path, "rule.duplicate", "exe")
+    IniWrite(generatedKeyboardName, editableConfig.Path, "rule.duplicate", "state")
+    editableConfig.Reload()
+    duplicateReconcile := editableConfig.ReconcileDiscoveredStates(discoveredCatalog)
+    AssertTest(duplicateReconcile["removedStates"] = 1,
+        "Duplicate input state is removed", failures)
+    AssertTest(duplicateReconcile["repointedRules"] = 1
+        && editableConfig.Doc.Get("rule.duplicate", "state", "") = "manual-japanese",
+        "Rules are repointed to the canonical input state", failures)
     configWindow := Map(
         "identityKey", "sample.exe|SampleClass|Sample",
         "exe", "sample.exe", "mode", "window"
@@ -101,6 +129,20 @@ RunSelfTests(baseDir) {
     raycastWindow := Map("exe", "Raycast.exe", "path", "Raycast.exe", "class", "Raycast", "title", "Raycast")
     AssertTest(!RuleEngine(reloadedConfig, testLogger).Match(raycastWindow).Count,
         "Application rule removal verification", failures)
+    invalidProfileId := "0404:DEADBEEF"
+    IniWrite(invalidProfileId, reloadedConfig.Path, "state.invalid-input", "profile")
+    IniWrite("unknown", reloadedConfig.Path, "state.invalid-input", "imeOpen")
+    IniWrite("1", reloadedConfig.Path, "rule.invalid-input", "enabled")
+    IniWrite("invalid.exe", reloadedConfig.Path, "rule.invalid-input", "exe")
+    IniWrite("invalid-input", reloadedConfig.Path, "rule.invalid-input", "state")
+    IniWrite("invalid-input", reloadedConfig.Path, "general", "defaultState")
+    reloadedConfig.Reload()
+    invalidReconcile := reloadedConfig.ReconcileDiscoveredStates(discoveredCatalog)
+    AssertTest(invalidReconcile["removedStates"] = 1 && invalidReconcile["removedRules"] = 1,
+        "Unavailable input state and rule are removed", failures)
+    AssertTest(invalidReconcile["defaultChanged"]
+        && discoveredCatalog.Has(StrLower(MapGet(reloadedConfig.GetNamedState(reloadedConfig.DefaultState), "profile", ""))),
+        "Unavailable global default falls back to a valid state", failures)
     try DirDelete(tempConfigDir, true)
 
     tempState := A_Temp "\ime-memory-state-selftest-" DllCall("kernel32\GetCurrentProcessId", "UInt") ".ini"
@@ -117,6 +159,16 @@ RunSelfTests(baseDir) {
         "conversion", "unknown", "sentence", "unknown"
     )
     storeApi.Upsert(syntheticWindow, learnedState, "learned")
+    invalidWindow := Map(
+        "identityKey", "invalid.exe", "mode", "app", "exe", "invalid.exe",
+        "path", "invalid.exe", "class", "InvalidWindow", "normalizedTitle", "Invalid"
+    )
+    storeApi.Upsert(invalidWindow, Map(
+        "profile", "0404:DEADBEEF", "imeOpen", "unknown",
+        "conversion", "unknown", "sentence", "unknown"
+    ), "learned")
+    AssertTest(storeApi.RemoveInvalidProfiles(Map("0409:00000409", true)) = 1,
+        "Unavailable remembered profile is removed", failures)
     AssertTest(storeApi.Flush(), "State store atomic flush", failures)
     loadedStore := StateStore(tempState, testLogger)
     AssertTest(StateMatches(loadedStore.Find(syntheticWindow), learnedState), "State store round-trip", failures)

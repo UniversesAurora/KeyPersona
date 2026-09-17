@@ -11,13 +11,20 @@ class ImeMemoryApp {
         this.Startup := StartupManager(this.Logger)
         this.Identity := WindowIdentity(this.Config, this.Logger)
         this.Profiles := InputProfiles(this.Identity, this.Config, this.Logger)
-        addedStates := this.Config.EnsureDiscoveredStates(this.Profiles.Catalog)
+        catalogResult := this.Config.ReconcileDiscoveredStates(
+            this.Profiles.LastRefreshSucceeded ? this.Profiles.Catalog : Map()
+        )
         this.SyncedProfileRevision := this.Profiles.Revision
-        if addedStates
-            this.Logger.Info("Added " addedStates " discovered input state(s) to " AppInfo.ConfigFile)
+        this.LogCatalogResult(catalogResult)
         this.Mode := ImeMode(this.Identity, this.Config, this.Logger)
         this.Rules := RuleEngine(this.Config, this.Logger)
         this.Store := StateStore(this.Config.StatePath, this.Logger)
+        removedRecords := catalogResult["authoritative"]
+            ? this.Store.RemoveInvalidProfiles(catalogResult["validProfiles"]) : 0
+        if removedRecords {
+            this.Logger.Info("Removed " removedRecords " remembered state(s) for unavailable input profiles")
+            this.Store.Flush()
+        }
         this.Enabled := this.Config.Enabled
         this.CurrentWindow := Map()
         this.CurrentState := Map()
@@ -29,6 +36,7 @@ class ImeMemoryApp {
         this.StableCounts := Map()
         this.Suppressions := Map()
         this.DesiredStates := Map()
+        this.ProfilePolicyRefreshNeeded := false
         this.ApplyGeneration := 0
         this.ForegroundSequence := 0
         this.PendingForegroundHwnd := 0
@@ -112,6 +120,20 @@ class ImeMemoryApp {
         hwnd := nextWindow["hwnd"]
         currentHwnd := MapGet(this.CurrentWindow, "hwnd", 0)
         if (currentHwnd = hwnd) {
+            if this.ProfilePolicyRefreshNeeded {
+                this.ProfilePolicyRefreshNeeded := false
+                this.CurrentRule := this.MatchRule(nextWindow)
+                desired := this.SelectDesiredState(nextWindow, this.CurrentRule)
+                this.CurrentSource := MapGet(desired, "source", "")
+                this.BeginBurst()
+                if this.ObserveOnly {
+                    this.CurrentState := this.ReadState(nextWindow)
+                    this.Tray.Refresh(true)
+                } else {
+                    this.ApplyState(nextWindow, desired, "profile-catalog")
+                }
+                return
+            }
             this.BeginBurst()
             return
         }
@@ -274,6 +296,11 @@ class ImeMemoryApp {
     ReadState(windowInfo) {
         profile := this.Profiles.Read(windowInfo)
         this.SyncDiscoveredProfiles()
+        if (HasKnownProfile(profile)
+            && !this.Profiles.Catalog.Has(StrLower(MapGet(profile, "profile", "")))) {
+            profile["profile"] := MapGet(profile, "langId", "0000") ":unknown"
+            profile["kind"] := "unknown"
+        }
         mode := this.Mode.Read(windowInfo, MapGet(profile, "kind", "unknown"))
         return Map(
             "profile", MapGet(profile, "profile", "unknown"),
@@ -294,13 +321,62 @@ class ImeMemoryApp {
     SyncDiscoveredProfiles() {
         if (this.SyncedProfileRevision = this.Profiles.Revision)
             return 0
-        added := this.Config.EnsureDiscoveredStates(this.Profiles.Catalog)
+        result := this.Config.ReconcileDiscoveredStates(
+            this.Profiles.LastRefreshSucceeded ? this.Profiles.Catalog : Map()
+        )
         this.SyncedProfileRevision := this.Profiles.Revision
-        if added {
+        removedRecords := result["authoritative"]
+            ? this.Store.RemoveInvalidProfiles(result["validProfiles"]) : 0
+        removedRuntime := result["authoritative"]
+            ? this.RemoveInvalidRuntimeStates(result["validProfiles"]) : 0
+        policyChanged := result["removedStates"] || result["removedRules"]
+            || result["repointedRules"] || result["defaultChanged"]
+            || removedRecords || removedRuntime
+        if (result["added"] || policyChanged)
             this.RefreshRuleEngine()
-            this.Logger.Info("Added " added " discovered input state(s) to " AppInfo.ConfigFile)
+        if removedRecords
+            this.ScheduleFlush()
+        if policyChanged {
+            this.ProfilePolicyRefreshNeeded := true
+            if this.CurrentWindow.Count {
+                this.CurrentRule := this.MatchRule(this.CurrentWindow)
+                desired := this.SelectDesiredState(this.CurrentWindow, this.CurrentRule)
+                this.CurrentSource := MapGet(desired, "source", "")
+            }
         }
-        return added
+        this.LogCatalogResult(result, removedRecords)
+        return result["added"] + result["removedStates"] + result["removedRules"]
+            + result["repointedRules"] + removedRecords + removedRuntime
+    }
+
+    RemoveInvalidRuntimeStates(validProfiles) {
+        removed := 0
+        for stateMap in [this.SessionStates, this.DesiredStates] {
+            invalidKeys := []
+            for hwndKey, state in stateMap {
+                profileId := StrLower(Trim(MapGet(state, "profile", "") ""))
+                if !validProfiles.Has(profileId)
+                    invalidKeys.Push(hwndKey)
+            }
+            for hwndKey in invalidKeys {
+                stateMap.Delete(hwndKey)
+                removed += 1
+            }
+        }
+        return removed
+    }
+
+    LogCatalogResult(result, removedRecords := 0) {
+        changed := result["added"] + result["removedStates"] + result["removedRules"]
+            + result["repointedRules"] + removedRecords
+        if !changed && !result["defaultChanged"]
+            return
+        this.Logger.Info("Input profile reconciliation: added=" result["added"]
+            . ", removedStates=" result["removedStates"]
+            . ", removedRules=" result["removedRules"]
+            . ", repointedRules=" result["repointedRules"]
+            . ", removedMemories=" removedRecords
+            . ", defaultChanged=" (result["defaultChanged"] ? "yes" : "no"))
     }
 
     Poll() {
@@ -311,6 +387,10 @@ class ImeMemoryApp {
             return
         if (!this.CurrentWindow.Count || foreground["hwnd"] != this.CurrentWindow["hwnd"]) {
             this.QueueForegroundSwitch(foreground["hwnd"])
+            return
+        }
+        if this.ProfilePolicyRefreshNeeded {
+            this.SwitchToForeground(foreground["hwnd"])
             return
         }
         this.ObserveWindow(this.CurrentWindow, "poll", false)
