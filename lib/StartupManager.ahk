@@ -2,7 +2,7 @@
 
 class StartupManager {
     static LegacyRunKey := "HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run"
-    static ValueName := AppInfo.LegacyStartupValueName
+    static ValueName := AppInfo.StartupValueName
     static ShortcutName := AppInfo.StartupShortcutName
 
     __New(logger) {
@@ -44,12 +44,28 @@ class StartupManager {
     }
 
     IsRegistered() {
-        return FileExist(this.ShortcutPath()) || this.LegacyCommand() != ""
+        return FileExist(this.ShortcutPath()) || this.HasLegacyRegistration()
     }
 
     LegacyCommand() {
-        try return RegRead(StartupManager.LegacyRunKey, StartupManager.ValueName)
+        for valueName in AppInfo.LegacyStartupValueNames {
+            try {
+                value := RegRead(StartupManager.LegacyRunKey, valueName)
+                if (value != "")
+                    return value
+            }
+        }
         return ""
+    }
+
+    HasLegacyRegistration() {
+        if (this.LegacyCommand() != "")
+            return true
+        for shortcutName in AppInfo.LegacyStartupShortcutNames {
+            if FileExist(A_Startup "\" shortcutName)
+                return true
+        }
+        return false
     }
 
     Enable() {
@@ -67,8 +83,8 @@ class StartupManager {
             try FileDelete(shortcut)
             throw Error("Windows startup shortcut could not be verified")
         }
-        this.RemoveLegacyRun()
-        if (this.LegacyCommand() != "") {
+        this.RemoveLegacyRegistrations()
+        if this.HasLegacyRegistration() {
             try FileDelete(shortcut)
             throw Error("Legacy startup registration could not be removed")
         }
@@ -80,7 +96,7 @@ class StartupManager {
         shortcut := this.ShortcutPath()
         if FileExist(shortcut)
             FileDelete(shortcut)
-        this.RemoveLegacyRun()
+        this.RemoveLegacyRegistrations()
         if this.IsRegistered()
             throw Error("Windows startup registration could not be removed")
         this.Logger.Info("Startup disabled")
@@ -88,10 +104,10 @@ class StartupManager {
     }
 
     MigrateLegacy() {
-        if !A_IsCompiled || this.LegacyCommand() = ""
+        if !A_IsCompiled || !this.HasLegacyRegistration()
             return false
         if this.IsEnabled() {
-            this.RemoveLegacyRun()
+            this.RemoveLegacyRegistrations()
             return true
         }
         this.Enable()
@@ -99,8 +115,15 @@ class StartupManager {
         return true
     }
 
-    RemoveLegacyRun() {
+    RemoveLegacyRegistrations() {
         try RegDelete(StartupManager.LegacyRunKey, StartupManager.ValueName)
+        for valueName in AppInfo.LegacyStartupValueNames
+            try RegDelete(StartupManager.LegacyRunKey, valueName)
+        for shortcutName in AppInfo.LegacyStartupShortcutNames {
+            legacyShortcut := A_Startup "\" shortcutName
+            if FileExist(legacyShortcut)
+                try FileDelete(legacyShortcut)
+        }
     }
 
     Toggle() {

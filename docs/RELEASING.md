@@ -15,10 +15,11 @@
 4. 运行完整构建：
 
    ```powershell
-   pwsh -NoProfile -File .\build.ps1
+   pwsh -NoProfile -File .\build.ps1 -Package
    ```
 
-5. 验证源码自检、编译版烟雾测试、安装位置、文件版本和运行状态。
+5. 验证源码自检、编译后自检、隔离烟雾测试、`dist` 产物、ZIP 内容、文件版本和 SHA-256。
 6. 创建包含版本号和发布说明的 release commit。
 7. 创建 annotated tag `v<版本号>`；tag 说明应概括本次发布内容。
-8. 不修改或覆盖已有 tag。需要修订时使用新的补丁版本。
+8. 推送 release commit 与 tag，并在 GitHub Release 上传 `dist` 中的版本化 ZIP。
+9. 不修改或覆盖已有 tag。需要修订时使用新的补丁版本。
