@@ -3,7 +3,7 @@
 ; Product identity and artifact names live here so renaming stays localized.
 ;@Ahk2Exe-SetName KeyPersona
 ;@Ahk2Exe-SetDescription KeyPersona
-;@Ahk2Exe-SetVersion 0.1.2
+;@Ahk2Exe-SetVersion 1.0.0
 ;@Ahk2Exe-SetMainIcon %A_ScriptDir%\assets\KeyPersona.ico
 ;@Ahk2Exe-SetCopyright Copyright (c) 2026 浮枕
 
@@ -22,7 +22,7 @@ class AppInfo {
     static Description := "按窗口记忆并自动恢复输入法状态"
     static Author := "浮枕"
     static AuthorHandle := "@universesaurora"
-    static Version := "0.1.2"
+    static Version := "1.0.0"
 
     ; Retained only so existing installations migrate without losing settings.
     static LegacyLogFiles := ["ime-memory.log"]
