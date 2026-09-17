@@ -244,6 +244,7 @@ if ($installRoot) {
 }
 
 $packagePath = $null
+$checksumsPath = $null
 if ($Package) {
     $licensePath = Join-Path $sourceRoot 'LICENSE'
     if (-not (Test-Path -LiteralPath $licensePath -PathType Leaf)) {
@@ -254,19 +255,22 @@ if ($Package) {
     $packageStage = Join-Path ([System.IO.Path]::GetTempPath()) ('keypersona-package-' + [guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $packageStage | Out-Null
     try {
-        foreach ($file in @(
-            $outputPath,
-            (Join-Path $outputRoot $configFile),
-            (Join-Path $sourceRoot 'README.md'),
-            (Join-Path $sourceRoot 'CHANGELOG.md'),
-            $licensePath
-        )) {
+        foreach ($file in @($outputPath, (Join-Path $sourceRoot 'README.md'),
+            (Join-Path $sourceRoot 'CHANGELOG.md'), $licensePath)) {
             Copy-Item -LiteralPath $file -Destination $packageStage
         }
+        Copy-Item -LiteralPath (Join-Path $outputRoot $configFile) `
+            -Destination (Join-Path $packageStage 'config.example.ini')
         if (Test-Path -LiteralPath $packagePath) {
             Remove-Item -LiteralPath $packagePath -Force
         }
         Compress-Archive -Path (Join-Path $packageStage '*') -DestinationPath $packagePath -CompressionLevel Optimal
+        $checksumsPath = Join-Path $outputRoot 'SHA256SUMS.txt'
+        $checksumLines = @(
+            "$((Get-FileHash -LiteralPath $outputPath -Algorithm SHA256).Hash.ToLowerInvariant())  $executableFile"
+            "$((Get-FileHash -LiteralPath $packagePath -Algorithm SHA256).Hash.ToLowerInvariant())  $packageName"
+        )
+        Set-Content -LiteralPath $checksumsPath -Value $checksumLines -Encoding utf8NoBOM
     } finally {
         if (Test-Path -LiteralPath $packageStage) {
             Remove-Item -LiteralPath $packageStage -Recurse -Force
@@ -279,6 +283,7 @@ $builtFile = Get-Item -LiteralPath $outputPath
     Output = $builtFile.FullName
     Installed = $installedPath
     Package = $packagePath
+    Checksums = $checksumsPath
     Version = $builtFile.VersionInfo.FileVersion
     SHA256 = (Get-FileHash -LiteralPath $builtFile.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
     Restarted = $restarted

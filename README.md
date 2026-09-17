@@ -26,7 +26,9 @@ KeyPersona 在 Windows 上按窗口记住输入法。切回终端、浏览器、
 
 ## 安装与运行
 
-KeyPersona 目前尚未发布正式版本。当前请从源码构建；构建产物位于 `dist`。将 `KeyPersona.exe` 和 `config.ini` 放进同一个可写目录，运行 `KeyPersona.exe`。编译版包含 AutoHotkey 运行时，目标机器不需要另行安装 AutoHotkey。
+从 [GitHub Releases](https://github.com/UniversesAurora/KeyPersona/releases/tag/v1.0.0) 下载 ZIP 或单独的 `KeyPersona.exe`。把 EXE 放进可写目录后运行；程序会在同一目录创建 `config.ini`、`state.ini` 和日志。编译版包含 AutoHotkey 运行时，目标机器不需要另行安装 AutoHotkey。
+
+ZIP 中的 `config.example.ini` 是默认配置示例。升级现有安装时不要用它覆盖自己的 `config.ini`。
 
 已安装 AutoHotkey v2 时，也可以直接运行源码：
 
