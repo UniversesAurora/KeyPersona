@@ -10,7 +10,7 @@
 ## 正式发布步骤
 
 1. 确认用户明确要求发布，并确定版本号。
-2. 在 `ime-memory.ahk` 中更新 `Ahk2Exe-SetVersion`。
+2. 在 `lib/AppInfo.ahk` 中同时更新 `AppInfo.Version` 与 `Ahk2Exe-SetVersion`。
 3. 在 `CHANGELOG.md` 顶部加入该版本的发布日期及新增、修改、修复说明。
 4. 运行完整构建：
 

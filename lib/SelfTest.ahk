@@ -22,6 +22,7 @@ RunSelfTests(baseDir) {
     AssertTest(!ShouldReplaceBacktickState(chineseProfile, "0"), "Backtick pass-through in IME English mode", failures)
     AssertTest(!ShouldReplaceBacktickState(englishProfile, "1"), "Backtick pass-through for non-Chinese input", failures)
     AssertTest(!ShouldReplaceBacktickState(chineseProfile, "1", false), "Backtick option disables replacement", failures)
+    AssertTest(AppInfo.Name != "" && AppInfo.ExecutableFile != "", "Central application identity", failures)
     noOpProbe := ImeModeNoOpProbe()
     noOpState := Map("imeOpen", "1", "conversion", "0x1", "sentence", "0x8")
     AssertTest(noOpProbe.Apply(Map(), noOpState) && noOpProbe.SetCalls = 0,
@@ -52,10 +53,36 @@ RunSelfTests(baseDir) {
     tempConfigDir := A_Temp "\ime-memory-config-selftest-" DllCall("kernel32\GetCurrentProcessId", "UInt")
     try DirDelete(tempConfigDir, true)
     DirCreate(tempConfigDir)
-    FileCopy(baseDir "\config.ini", tempConfigDir "\config.ini", true)
+    FileCopy(baseDir "\" AppInfo.ConfigFile, tempConfigDir "\" AppInfo.ConfigFile, true)
     editableConfig := ImeMemoryConfig(tempConfigDir)
     AssertTest(editableConfig.SetDefaultState("english-us"), "Default state write", failures)
     AssertTest(editableConfig.SetBacktickInChinese(true), "Backtick option write", failures)
+    discoveredChineseId := "0804:{11111111-1111-1111-1111-111111111111}{22222222-2222-2222-2222-222222222222}"
+    discoveredKeyboardId := "0411:00000411"
+    discoveredCatalog := Map(
+        StrLower(discoveredChineseId), Map(
+            "id", discoveredChineseId, "kind", "tip", "langId", 0x0804,
+            "description", "Test Chinese IME"
+        ),
+        StrLower(discoveredKeyboardId), Map(
+            "id", discoveredKeyboardId, "kind", "keyboard", "langId", 0x0411,
+            "description", "Test Japanese Keyboard"
+        )
+    )
+    AssertTest(editableConfig.EnsureDiscoveredStates(discoveredCatalog) = 3,
+        "Discovered input states are generated", failures)
+    AssertTest(editableConfig.EnsureDiscoveredStates(discoveredCatalog) = 0,
+        "Discovered input state generation is idempotent", failures)
+    generatedChineseModes := 0
+    generatedKeyboardStates := 0
+    for generatedStateName, generatedState in editableConfig.NamedStates {
+        if (StrLower(MapGet(generatedState, "profile", "")) = StrLower(discoveredChineseId))
+            generatedChineseModes += 1
+        if (StrLower(MapGet(generatedState, "profile", "")) = StrLower(discoveredKeyboardId))
+            generatedKeyboardStates += 1
+    }
+    AssertTest(generatedChineseModes = 2, "Chinese TIP gets Chinese and English states", failures)
+    AssertTest(generatedKeyboardStates = 1, "Keyboard layout gets one generated state", failures)
     configWindow := Map(
         "identityKey", "sample.exe|SampleClass|Sample",
         "exe", "sample.exe", "mode", "window"

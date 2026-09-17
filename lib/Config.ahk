@@ -3,9 +3,9 @@
 class ImeMemoryConfig {
     __New(baseDir) {
         this.BaseDir := baseDir
-        this.Path := baseDir "\config.ini"
-        this.StatePath := baseDir "\state.ini"
-        this.LogPath := baseDir "\ime-memory.log"
+        this.Path := baseDir "\" AppInfo.ConfigFile
+        this.StatePath := baseDir "\" AppInfo.StateFile
+        this.LogPath := baseDir "\" AppInfo.LogFile
         this.EnsureDefaultFile()
         this.Reload()
     }
@@ -23,7 +23,7 @@ class ImeMemoryConfig {
         this.MessageTimeoutMs := ParseInt(this.Doc.Get("general", "messageTimeoutMs", "120"), 120, 20, 1000)
         this.LogLevel := this.Doc.Get("general", "logLevel", "info")
         this.WindowModeExe := SplitCsv(this.Doc.Get("identity", "windowModeExe", "msedge.exe,chrome.exe,firefox.exe,explorer.exe,zettlr.exe"))
-        this.IgnoreExe := SplitCsv(this.Doc.Get("identity", "ignoreExe", "ime-memory.exe,autohotkey64.exe,autohotkey32.exe,textinputhost.exe,searchhost.exe,startmenuexperiencehost.exe"))
+        this.IgnoreExe := SplitCsv(this.Doc.Get("identity", "ignoreExe", "autohotkey64.exe,autohotkey32.exe,textinputhost.exe,searchhost.exe,startmenuexperiencehost.exe"))
         this.IgnoreClassRegex := this.Doc.Get("identity", "ignoreClassRegex", "i)^(Progman|WorkerW|Shell_(Secondary)?TrayWnd|TopLevelWindowForOverflowXamlIsland|NotifyIconOverflowWindow|XamlExplorerHostIslandWindow|tooltips_class32|IME)$")
         this.BacktickInChinese := ParseBool(this.Doc.Get("typing", "backtickInChinese", "0"), false)
         this.NamedStates := this.LoadNamedStates()
@@ -38,6 +38,7 @@ class ImeMemoryConfig {
                 continue
             state := Map(
                 "name", match[1],
+                "description", MapGet(values, "description", ""),
                 "profile", MapGet(values, "profile", "unknown"),
                 "imeOpen", MapGet(values, "imeOpen", "unknown"),
                 "conversion", MapGet(values, "conversion", "preserve"),
@@ -46,6 +47,62 @@ class ImeMemoryConfig {
             states[match[1]] := state
         }
         return states
+    }
+
+    EnsureDiscoveredStates(catalog) {
+        if !IsObject(catalog)
+            return 0
+        existing := Map()
+        for stateName, state in this.NamedStates {
+            key := this.DiscoveredStateKey(
+                MapGet(state, "profile", "unknown"),
+                MapGet(state, "imeOpen", "unknown")
+            )
+            existing[key] := true
+        }
+        added := 0
+        for catalogKey, profile in catalog {
+            profileId := MapGet(profile, "id", "")
+            if (profileId = "")
+                continue
+            languageState := Map(
+                "profile", profileId,
+                "langId", Hex(MapGet(profile, "langId", 0), 4)
+            )
+            if (MapGet(profile, "kind", "") = "tip" && IsChineseLanguageState(languageState)) {
+                added += this.EnsureDiscoveredState(profile, "1", "chinese", existing)
+                added += this.EnsureDiscoveredState(profile, "0", "english", existing)
+            } else {
+                added += this.EnsureDiscoveredState(profile, "unknown", "", existing)
+            }
+        }
+        if added
+            this.Reload()
+        return added
+    }
+
+    EnsureDiscoveredState(profile, imeOpen, suffix, existing) {
+        profileId := MapGet(profile, "id", "")
+        key := this.DiscoveredStateKey(profileId, imeOpen)
+        if existing.Has(key)
+            return 0
+        stateName := "auto-" StrLower(Fnv1a32(StrLower(profileId)))
+        if (suffix != "")
+            stateName .= "-" suffix
+        section := "state." stateName
+        description := StrReplace(MapGet(profile, "description", profileId), "`n", " ")
+        description := StrReplace(description, "`r", " ")
+        IniWrite(description, this.Path, section, "description")
+        IniWrite(profileId, this.Path, section, "profile")
+        IniWrite(imeOpen, this.Path, section, "imeOpen")
+        IniWrite("preserve", this.Path, section, "conversion")
+        IniWrite("preserve", this.Path, section, "sentence")
+        existing[key] := true
+        return 1
+    }
+
+    DiscoveredStateKey(profileId, imeOpen) {
+        return StrLower(Trim(profileId "")) "|" StrLower(Trim(imeOpen ""))
     }
 
     LoadPrefixedSections(prefix) {
@@ -158,7 +215,7 @@ class ImeMemoryConfig {
     EnsureDefaultFile() {
         if FileExist(this.Path)
             return
-        template := "; IME Memory 用户配置。修改后从托盘选择“重新加载”。`n"
+        template := "; " AppInfo.Name " 用户配置。修改后从托盘选择“重新加载”。`n"
             . "; profile 可从托盘状态或 tools\ime-probe.ahk 的输出中复制。`n`n"
             . "[general]`n"
             . "enabled=1`n"
@@ -173,7 +230,7 @@ class ImeMemoryConfig {
             . "logLevel=info`n`n"
             . "[identity]`n"
             . "windowModeExe=msedge.exe,chrome.exe,firefox.exe,explorer.exe,zettlr.exe`n"
-            . "ignoreExe=ime-memory.exe,autohotkey64.exe,autohotkey32.exe,textinputhost.exe,searchhost.exe,startmenuexperiencehost.exe`n"
+            . "ignoreExe=autohotkey64.exe,autohotkey32.exe,textinputhost.exe,searchhost.exe,startmenuexperiencehost.exe`n"
             . "ignoreClassRegex=i)^(Progman|WorkerW|Shell_(Secondary)?TrayWnd|TopLevelWindowForOverflowXamlIsland|NotifyIconOverflowWindow|XamlExplorerHostIslandWindow|tooltips_class32|IME)$`n`n"
             . "[typing]`n"
             . "backtickInChinese=0`n`n"

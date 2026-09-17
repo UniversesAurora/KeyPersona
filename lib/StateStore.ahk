@@ -136,7 +136,7 @@ class StateStore {
     }
 
     Serialize() {
-        text := "; Managed by IME Memory. Edit config.ini, not this file, while the app is running.`n"
+        text := "; Managed by " AppInfo.Name ". Edit " AppInfo.ConfigFile ", not this file, while the app is running.`n"
             . "[meta]`n"
             . "schemaVersion=2`n"
             . "updatedAt=" FormatTime(, "yyyy-MM-dd HH:mm:ss") "`n`n"

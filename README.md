@@ -2,12 +2,14 @@
 
 一个使用 AutoHotkey v2 和原生 Windows API 实现的轻量输入法按窗口记忆工具。
 
-当前版本针对以下两种输入 profile 做过适配：
+当前版本已实际验证以下两种输入 profile：
 
 - 英语（美国）- 美式键盘
 - 微信输入法 2.1.4.6
 
 它会监听前台窗口变化，恢复该窗口上一次使用的输入 profile 和可读写的 IME 内部中/英文状态，并将学习结果持久化到 `state.ini`。
+
+启用的输入 profile 会在启动、打开托盘菜单以及遇到未知活动 profile 时重新枚举。新发现的中文 TIP 会自动在运行时 `config.ini` 增加中文和英文两个命名状态；其他输入布局增加一个命名状态。自动生成只补充缺失项，不覆盖用户已有状态、名称和规则，也不自动删除已经配置的旧 profile。
 
 ## 运行
 
@@ -38,6 +40,8 @@ pwsh -NoProfile -File .\build.ps1
 构建脚本会从系统安装目录或 `PATH` 查找 AutoHotkey v2。也可以用环境变量 `IME_MEMORY_AHK_RUNTIME` 指定本机运行时位置；该本地设置不需要写入仓库。
 
 日常修改只提交 commit，不自动发布新版本。正式发布历史见 [CHANGELOG.md](CHANGELOG.md)，发布步骤和约束见 [RELEASING.md](RELEASING.md)。
+
+产品名称、程序文件名、配置文件名、图标、作者和启动项名称集中在 `lib/AppInfo.ahk`。改名时优先修改这一处；构建脚本也从这里读取源码与输出文件名。
 
 ## 默认行为
 

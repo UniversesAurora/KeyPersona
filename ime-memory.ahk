@@ -2,12 +2,8 @@
 #SingleInstance Force
 #Warn All, StdOut
 Persistent
-;@Ahk2Exe-SetName IME Memory
-;@Ahk2Exe-SetDescription IME Memory
-;@Ahk2Exe-SetVersion 0.1.2
-;@Ahk2Exe-SetMainIcon assets\ime-memory.ico
-;@Ahk2Exe-SetCopyright Personal utility
 
+#Include lib\AppInfo.ahk
 #Include lib\Utils.ahk
 #Include lib\Config.ahk
 #Include lib\StartupManager.ahk
@@ -24,8 +20,8 @@ Persistent
 #Include lib\SelfTest.ahk
 
 SetWorkingDir(A_ScriptDir)
-if !A_IsCompiled && FileExist(A_ScriptDir "\assets\ime-memory.ico")
-    TraySetIcon(A_ScriptDir "\assets\ime-memory.ico")
+if !A_IsCompiled && FileExist(A_ScriptDir "\" AppInfo.IconFile)
+    TraySetIcon(A_ScriptDir "\" AppInfo.IconFile)
 OnError(GlobalErrorHandler)
 
 if HasArgument("--self-test") {
@@ -44,7 +40,7 @@ try {
         SetTimer((*) => ExitApp(), -smokeSeconds * 1000)
 } catch Error as startupError {
     IME_MEMORY_APP.Logger.Error("Fatal startup error: " startupError.Message " at " startupError.File ":" startupError.Line)
-    FileAppend("IME Memory startup failed: " startupError.Message "`n", "**", "UTF-8")
+    FileAppend(AppInfo.Name " startup failed: " startupError.Message "`n", "**", "UTF-8")
     ExitApp(1)
 }
 
