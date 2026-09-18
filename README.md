@@ -34,7 +34,7 @@ KeyPersona 在 Windows 上按窗口记住输入法。切回终端、浏览器、
 
 ## 安装与运行
 
-从 [GitHub Releases](https://github.com/UniversesAurora/KeyPersona/releases/tag/v1.0.0) 下载 ZIP 或单独的 `KeyPersona.exe`。把 EXE 放进可写目录后运行；程序会在同一目录创建 `config.ini`、`state.ini` 和日志。
+从 [GitHub Releases](https://github.com/UniversesAurora/KeyPersona/releases/tag/v1.1.0) 下载 ZIP 或单独的 `KeyPersona.exe`。把 EXE 放进可写目录后运行；程序会在同一目录创建 `config.ini`、`state.ini` 和日志。
 
 ZIP 中的 `config.example.ini` 是默认配置示例。升级现有安装时不要用它覆盖自己的 `config.ini`。
 
