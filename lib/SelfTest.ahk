@@ -76,6 +76,7 @@ RunSelfTests(baseDir) {
     FileCopy(baseDir "\" AppInfo.ConfigFile, tempConfigDir "\" AppInfo.ConfigFile, true)
     editableConfig := KeyPersonaConfig(tempConfigDir)
     AssertTest(editableConfig.SetDefaultState("english-us"), "Default state write", failures)
+    AssertTest(!editableConfig.SetAutoMemory(false), "Automatic memory setting write", failures)
     AssertTest(editableConfig.SetBacktickInChinese(true), "Backtick option write", failures)
     discoveredChineseId := "0804:{11111111-1111-1111-1111-111111111111}{22222222-2222-2222-2222-222222222222}"
     discoveredKeyboardId := "0411:00000411"
@@ -141,6 +142,7 @@ RunSelfTests(baseDir) {
         "Window rule lookup", failures)
     reloadedConfig := KeyPersonaConfig(tempConfigDir)
     AssertTest(reloadedConfig.DefaultState = "english-us", "Default state reload", failures)
+    AssertTest(!reloadedConfig.AutoMemory, "Automatic memory setting reload", failures)
     AssertTest(reloadedConfig.BacktickInChinese, "Backtick option reload", failures)
     AssertTest(reloadedConfig.GetWindowRule(configWindow).Count > 0, "Window rule reload", failures)
     AssertTest(reloadedConfig.RemoveWindowRule(configWindow), "Window rule removal", failures)
@@ -198,8 +200,45 @@ RunSelfTests(baseDir) {
     FileAppend("[broken`n", tempState, "UTF-8")
     recoveredStore := StateStore(tempState, testLogger)
     AssertTest(StateMatches(recoveredStore.Find(syntheticWindow), learnedState), "State backup recovery", failures)
+    AssertTest(recoveredStore.ClearAll() = 1, "Clear-all removes persisted records", failures)
+    AssertTest(recoveredStore.Flush(), "Clear-all state flush", failures)
+    clearedStore := StateStore(tempState, testLogger)
+    clearedBackup := StateStore(tempState ".bak", testLogger)
+    AssertTest(clearedStore.Records.Count = 0 && clearedBackup.Records.Count = 0,
+        "Clear-all removes primary and backup memories", failures)
     try FileDelete(tempState)
     try FileDelete(tempState ".bak")
+
+    policyState := Map(
+        "profile", "0409:00000409", "imeOpen", "unknown",
+        "conversion", "unknown", "sentence", "unknown", "source", "learned"
+    )
+    ruleState := Map(
+        "profile", "0804:rule", "imeOpen", "1",
+        "conversion", "preserve", "sentence", "preserve"
+    )
+    ruleMatch := Map("state", ruleState)
+    defaultPolicyState := Map(
+        "profile", "0804:default", "imeOpen", "1",
+        "conversion", "preserve", "sentence", "preserve"
+    )
+    rememberedTarget := KeyPersonaApp.ChooseDesiredState(
+        true, policyState, Map(), ruleMatch, defaultPolicyState)
+    AssertTest(MapGet(rememberedTarget, "profile", "") = "0409:00000409",
+        "Automatic memory takes priority over a user default rule", failures)
+    ruleTarget := KeyPersonaApp.ChooseDesiredState(
+        true, Map(), Map(), ruleMatch, defaultPolicyState)
+    AssertTest(MapGet(ruleTarget, "profile", "") = "0804:rule"
+        && MapGet(ruleTarget, "source", "") = "rule",
+        "User rule seeds a window without memory", failures)
+    disabledRuleTarget := KeyPersonaApp.ChooseDesiredState(
+        false, Map(), policyState, ruleMatch, defaultPolicyState)
+    AssertTest(MapGet(disabledRuleTarget, "profile", "") = "0804:rule",
+        "Disabled automatic memory still applies user rules", failures)
+    unmanagedTarget := KeyPersonaApp.ChooseDesiredState(
+        false, Map(), policyState, Map(), defaultPolicyState)
+    AssertTest(unmanagedTarget.Count = 0,
+        "Disabled automatic memory leaves unmatched windows unchanged", failures)
     rulesApi := RuleEngine(testConfig, testLogger)
     terminalWindow := Map("exe", "WindowsTerminal.exe", "path", "WindowsTerminal.exe", "class", "CASCADIA_HOSTING_WINDOW_CLASS", "title", "Terminal")
     terminalRule := rulesApi.Match(terminalWindow)
