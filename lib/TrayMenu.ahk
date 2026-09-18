@@ -27,7 +27,7 @@ class TrayMenuController {
         fingerprint := this.App.Enabled "|" MapGet(window, "hwnd", 0) "|"
             . StateSignature(state) "|" MapGet(rule, "name", "") "|"
             . this.App.CurrentSource "|" this.App.Config.DefaultState "|"
-            . this.App.Config.BacktickInChinese
+            . this.App.Config.AutoMemory "|" this.App.Config.BacktickInChinese
         if !force && fingerprint = this.LastFingerprint
             return
         this.LastFingerprint := fingerprint
@@ -36,6 +36,9 @@ class TrayMenuController {
         tray.Add("启用自动切换", ObjBindMethod(this.App, "ToggleEnabled"))
         if this.App.Enabled
             tray.Check("启用自动切换")
+        tray.Add("自动记忆输入法", ObjBindMethod(this.App, "ToggleAutoMemory"))
+        if this.App.Config.AutoMemory
+            tray.Check("自动记忆输入法")
         tray.Add("开机自启动", ObjBindMethod(this.App, "ToggleStartup"))
         if this.App.Startup.IsEnabled()
             tray.Check("开机自启动")
@@ -84,10 +87,11 @@ class TrayMenuController {
                 this.StateMenu.Check(label)
         }
         tray.Add("全局默认输入法", this.DefaultMenu)
-        tray.Add("设置当前窗口为", this.StateMenu)
+        tray.Add("当前窗口默认输入法", this.StateMenu)
         tray.Add("清除当前窗口的自动记忆", ObjBindMethod(this.App, "ClearCurrentRecord"))
+        tray.Add("清除所有自动记忆…", ObjBindMethod(this.App, "ClearAllRecords"))
         if !window.Count {
-            tray.Disable("设置当前窗口为")
+            tray.Disable("当前窗口默认输入法")
             tray.Disable("清除当前窗口的自动记忆")
         }
         tray.Add()
@@ -125,8 +129,8 @@ class TrayMenuController {
     SourceLabel(source, rule) {
         if (source = "rule") {
             if (rule.Count && MapGet(rule, "scope", "application") = "window")
-                return "用户规则（当前窗口）"
-            return "用户规则" (rule.Count ? "（" rule["name"] "）" : "")
+                return "用户规则（当前窗口默认）"
+            return "用户规则" (rule.Count ? "（" rule["name"] "，默认）" : "（默认）")
         }
         if (source = "manual")
             return "手动指定"
@@ -135,7 +139,7 @@ class TrayMenuController {
         if (source = "default")
             return "全局默认"
         if (source = "observed")
-            return "仅观察"
+            return this.App.Config.AutoMemory ? "仅观察" : "自动记忆已关闭"
         return "检测中"
     }
 
@@ -192,6 +196,7 @@ class TrayMenuController {
 
     ShowMenu(*) {
         this.App.RefreshInputProfiles()
+        this.App.RefreshCurrentStateForMenu()
         this.Refresh(true)
         A_TrayMenu.Show()
     }

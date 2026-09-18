@@ -13,6 +13,7 @@ class KeyPersonaConfig {
     Reload() {
         this.Doc := IniDocument.Load(this.Path)
         this.Enabled := ParseBool(this.Doc.Get("general", "enabled", "1"), true)
+        this.AutoMemory := ParseBool(this.Doc.Get("general", "autoMemory", "1"), true)
         this.DefaultState := this.Doc.Get("general", "defaultState", "wetype-chinese")
         this.ForegroundSettleMs := ParseInt(this.Doc.Get("general", "foregroundSettleMs", "80"), 80, 20, 500)
         this.ActivePollMs := ParseInt(this.Doc.Get("general", "activePollMs", "250"), 250, 100, 2000)
@@ -268,6 +269,13 @@ class KeyPersonaConfig {
         return true
     }
 
+    SetAutoMemory(enabled) {
+        value := enabled ? "1" : "0"
+        IniWrite(value, this.Path, "general", "autoMemory")
+        this.AutoMemory := !!enabled
+        return this.AutoMemory
+    }
+
     SetBacktickInChinese(enabled) {
         value := enabled ? "1" : "0"
         IniWrite(value, this.Path, "typing", "backtickInChinese")
@@ -338,6 +346,7 @@ class KeyPersonaConfig {
             . "; profile 可从托盘状态或 tools\KeyPersona-probe.ahk 的输出中复制。`n`n"
             . "[general]`n"
             . "enabled=1`n"
+            . "autoMemory=1`n"
             . "defaultState=wetype-chinese`n"
             . "foregroundSettleMs=80`n"
             . "activePollMs=250`n"
@@ -368,6 +377,7 @@ class KeyPersonaConfig {
             . "imeOpen=0`n"
             . "conversion=preserve`n"
             . "sentence=preserve`n`n"
+            . "; 用户规则仅在窗口没有自动记忆时作为默认值，不会锁定输入法。`n"
             . "[rule.windows-terminal]`n"
             . "enabled=1`npriority=100`nexe=WindowsTerminal.exe`nstate=english-us`n`n"
             . "[rule.classic-powershell]`n"

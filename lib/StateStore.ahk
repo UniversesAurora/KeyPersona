@@ -7,6 +7,7 @@ class StateStore {
         this.Logger := logger
         this.Records := Map()
         this.Dirty := false
+        this.ResetBackupOnFlush := false
         this.Load()
     }
 
@@ -118,6 +119,14 @@ class StateStore {
         return removed
     }
 
+    ClearAll() {
+        removed := this.Records.Count
+        this.Records := Map()
+        this.Dirty := true
+        this.ResetBackupOnFlush := true
+        return removed
+    }
+
     StateFromRecord(record) {
         return Map(
             "profile", MapGet(record, "profile", "unknown"),
@@ -139,13 +148,19 @@ class StateStore {
                 throw Error("Unable to open temporary state file")
             stateFile.Write(this.Serialize())
             stateFile.Close()
-            if FileExist(this.Path) {
+            if FileExist(this.Path) && !this.ResetBackupOnFlush {
                 try FileCopy(this.Path, this.BackupPath, true)
             }
             flags := 0x1 | 0x8
             if !DllCall("kernel32\MoveFileExW", "WStr", tempPath, "WStr", this.Path, "UInt", flags, "Int")
                 throw OSError(A_LastError, "MoveFileExW")
+            if this.ResetBackupOnFlush {
+                try FileCopy(this.Path, this.BackupPath, true)
+                catch Error as backupError
+                    this.Logger.Warn("Cleared state backup could not be refreshed: " backupError.Message)
+            }
             this.Dirty := false
+            this.ResetBackupOnFlush := false
             this.Logger.Debug("State file flushed")
             return true
         } catch Error as err {
