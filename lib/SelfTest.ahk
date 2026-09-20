@@ -239,6 +239,13 @@ RunSelfTests(baseDir) {
         false, Map(), policyState, Map(), defaultPolicyState)
     AssertTest(unmanagedTarget.Count = 0,
         "Disabled automatic memory leaves unmatched windows unchanged", failures)
+    observedBaseline := StateClone(policyState)
+    observedBaseline["source"] := "observed"
+    baselineTarget := KeyPersonaApp.ChooseDesiredState(
+        true, observedBaseline, Map(), ruleMatch, defaultPolicyState)
+    AssertTest(MapGet(baselineTarget, "profile", "") = "0804:rule"
+        && MapGet(baselineTarget, "source", "") = "rule",
+        "Observation baseline does not become automatic memory", failures)
     AssertTest(KeyPersonaApp.IsSameTopLevelWindow(Map("hwnd", 100), Map("hwnd", 100)),
         "Foreground observation accepts the current top-level window", failures)
     AssertTest(!KeyPersonaApp.IsSameTopLevelWindow(Map("hwnd", 100), Map("hwnd", 200)),

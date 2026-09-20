@@ -201,7 +201,8 @@ class KeyPersonaApp {
     }
 
     static ChooseDesiredState(autoMemory, sessionState, savedState, matchedRule, defaultState) {
-        if (autoMemory && sessionState.Count && HasKnownProfile(sessionState))
+        if (autoMemory && sessionState.Count && HasKnownProfile(sessionState)
+            && KeyPersonaApp.IsRestorableSessionState(sessionState))
             return StateClone(sessionState)
         if (autoMemory && savedState.Count && HasKnownProfile(savedState)) {
             state := StateClone(savedState)
@@ -218,6 +219,10 @@ class KeyPersonaApp {
         state := StateClone(defaultState)
         state["source"] := "default"
         return state
+    }
+
+    static IsRestorableSessionState(state) {
+        return MapGet(state, "source", "") != "observed"
     }
 
     static IsSameTopLevelWindow(left, right) {
@@ -385,6 +390,31 @@ class KeyPersonaApp {
         }
     }
 
+    SetObservationBaseline(windowInfo, actualState) {
+        if !windowInfo.Count || !actualState.Count
+            return
+        matchedRule := this.MatchRule(windowInfo)
+        source := "observed"
+        if (matchedRule.Count && StateMatches(actualState, matchedRule["state"])) {
+            source := "rule"
+        } else {
+            defaultState := this.Config.GetNamedState(this.Config.DefaultState)
+            if (defaultState.Count && StateMatches(actualState, defaultState))
+                source := "default"
+        }
+        baseline := StateClone(actualState)
+        baseline["source"] := source
+        hwndKey := windowInfo["hwnd"] ""
+        this.SessionStates[hwndKey] := baseline
+        this.LastSamples[hwndKey] := StateSignature(actualState)
+        this.StableCounts[hwndKey] := 1
+        if (windowInfo["hwnd"] = MapGet(this.CurrentWindow, "hwnd", 0)) {
+            this.CurrentState := actualState
+            this.CurrentRule := matchedRule
+            this.CurrentSource := source
+        }
+    }
+
     SyncDiscoveredProfiles() {
         if (this.SyncedProfileRevision = this.Profiles.Revision)
             return 0
@@ -495,6 +525,11 @@ class KeyPersonaApp {
         }
         if (this.StableCounts[hwndKey] < 2)
             return
+        if !this.SessionStates.Has(hwndKey) {
+            this.SetObservationBaseline(windowInfo, actual)
+            this.Tray.Refresh()
+            return
+        }
         oldState := this.SessionStates.Has(hwndKey) ? this.SessionStates[hwndKey] : Map()
         changed := !oldState.Count || StateSignature(oldState) != signature
         if changed {
@@ -724,9 +759,8 @@ class KeyPersonaApp {
             return
         }
         if this.CurrentWindow.Count {
-            this.CurrentState := this.ReadState(this.CurrentWindow)
-            this.CurrentRule := this.MatchRule(this.CurrentWindow)
-            this.CurrentSource := "observed"
+            actual := this.ReadState(this.CurrentWindow)
+            this.SetObservationBaseline(this.CurrentWindow, actual)
         }
         this.Logger.Info("Cleared all automatic memories: " removed " persisted record(s)")
         TrayTip("已清除所有自动记忆；用户规则和全局默认设置保持不变。", AppInfo.Name, "Mute")

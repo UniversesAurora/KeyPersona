@@ -139,7 +139,7 @@ class TrayMenuController {
         if (source = "default")
             return "全局默认"
         if (source = "observed")
-            return this.App.Config.AutoMemory ? "仅观察" : "自动记忆已关闭"
+            return this.App.Config.AutoMemory ? "当前状态（未记忆）" : "自动记忆已关闭"
         return "检测中"
     }
 
