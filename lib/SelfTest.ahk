@@ -239,6 +239,10 @@ RunSelfTests(baseDir) {
         false, Map(), policyState, Map(), defaultPolicyState)
     AssertTest(unmanagedTarget.Count = 0,
         "Disabled automatic memory leaves unmatched windows unchanged", failures)
+    AssertTest(KeyPersonaApp.IsSameTopLevelWindow(Map("hwnd", 100), Map("hwnd", 100)),
+        "Foreground observation accepts the current top-level window", failures)
+    AssertTest(!KeyPersonaApp.IsSameTopLevelWindow(Map("hwnd", 100), Map("hwnd", 200)),
+        "Foreground observation rejects a window after focus leaves it", failures)
     rulesApi := RuleEngine(testConfig, testLogger)
     terminalWindow := Map("exe", "WindowsTerminal.exe", "path", "WindowsTerminal.exe", "class", "CASCADIA_HOSTING_WINDOW_CLASS", "title", "Terminal")
     terminalRule := rulesApi.Match(terminalWindow)

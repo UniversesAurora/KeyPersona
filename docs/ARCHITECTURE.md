@@ -150,7 +150,7 @@ Windows 没有一个文档化广播能同时覆盖 Win+Space、语言栏点击�
 
 当前实现没有单独监听 Windows 会话锁定事件。锁屏或安全桌面没有可识别窗口时不会学习状态；自动记忆开启时，采样定时器本身不会因为 session lock 被显式关闭。
 
-同一快照连续观察两次才学习；离开窗口时允许用最后一次有效读取立即收尾。快照包含 profile、`imeOpen`、conversion 和 sentence。
+同一快照连续观察两次才学习。只有窗口仍在前台时才读取输入法；切到其他窗口后不再重新读取旧窗口，避免把新窗口的 TSF profile 记到旧窗口。快照包含 profile、`imeOpen`、conversion 和 sentence。
 
 ## 7. 避免把自动恢复当成用户操作
 

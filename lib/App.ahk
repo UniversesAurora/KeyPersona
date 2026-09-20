@@ -144,8 +144,6 @@ class KeyPersonaApp {
             this.BeginBurst()
             return
         }
-        if this.CurrentWindow.Count
-            this.ObserveWindow(this.CurrentWindow, "leave", true)
         hwndKey := hwnd ""
         if this.SessionWindows.Has(hwndKey) {
             original := this.SessionWindows[hwndKey]
@@ -220,6 +218,11 @@ class KeyPersonaApp {
         state := StateClone(defaultState)
         state["source"] := "default"
         return state
+    }
+
+    static IsSameTopLevelWindow(left, right) {
+        leftHwnd := MapGet(left, "hwnd", 0)
+        return leftHwnd && leftHwnd = MapGet(right, "hwnd", 0)
     }
 
     MatchRule(windowInfo) {
@@ -371,7 +374,7 @@ class KeyPersonaApp {
         if !this.CurrentWindow.Count
             return
         foreground := this.Identity.Resolve()
-        if !foreground.Count || foreground["hwnd"] != this.CurrentWindow["hwnd"]
+        if !KeyPersonaApp.IsSameTopLevelWindow(this.CurrentWindow, foreground)
             return
         actual := this.ReadState(this.CurrentWindow)
         this.CurrentState := actual
@@ -449,7 +452,7 @@ class KeyPersonaApp {
         foreground := this.Identity.Resolve()
         if !foreground.Count
             return
-        if (!this.CurrentWindow.Count || foreground["hwnd"] != this.CurrentWindow["hwnd"]) {
+        if !KeyPersonaApp.IsSameTopLevelWindow(this.CurrentWindow, foreground) {
             this.QueueForegroundSwitch(foreground["hwnd"])
             return
         }
@@ -457,12 +460,13 @@ class KeyPersonaApp {
             this.SwitchToForeground(foreground["hwnd"])
             return
         }
-        this.ObserveWindow(this.CurrentWindow, "poll", false)
+        this.ObserveCurrentWindow()
         if (this.PollPeriod != this.Config.IdlePollMs && TickCount64() >= this.BurstUntil)
             this.SetPollPeriod(this.Config.IdlePollMs)
     }
 
-    ObserveWindow(windowInfo, reason, leaving := false) {
+    ObserveCurrentWindow() {
+        windowInfo := this.CurrentWindow
         if !windowInfo.Count || !this.Config.AutoMemory
             return
         hwndKey := windowInfo["hwnd"] ""
@@ -473,7 +477,7 @@ class KeyPersonaApp {
         if !HasKnownProfile(actual)
             return
         if this.ObserveOnly {
-            if (!leaving && windowInfo["hwnd"] = MapGet(this.CurrentWindow, "hwnd", 0)) {
+            if (windowInfo["hwnd"] = MapGet(this.CurrentWindow, "hwnd", 0)) {
                 this.CurrentState := actual
                 this.CurrentRule := this.MatchRule(windowInfo)
                 this.CurrentSource := this.CurrentRule.Count ? "rule" : "observed"
@@ -489,8 +493,7 @@ class KeyPersonaApp {
             this.LastSamples[hwndKey] := signature
             this.StableCounts[hwndKey] := 1
         }
-        required := leaving ? 1 : 2
-        if (this.StableCounts[hwndKey] < required)
+        if (this.StableCounts[hwndKey] < 2)
             return
         oldState := this.SessionStates.Has(hwndKey) ? this.SessionStates[hwndKey] : Map()
         changed := !oldState.Count || StateSignature(oldState) != signature
@@ -504,7 +507,7 @@ class KeyPersonaApp {
             actual["source"] := MapGet(oldState, "source", "learned")
             this.SessionStates[hwndKey] := StateClone(actual)
         }
-        if (!leaving && windowInfo["hwnd"] = MapGet(this.CurrentWindow, "hwnd", 0)) {
+        if (windowInfo["hwnd"] = MapGet(this.CurrentWindow, "hwnd", 0)) {
             this.CurrentState := actual
             this.CurrentRule := matchedRule
             this.CurrentSource := MapGet(actual, "source", "learned")
