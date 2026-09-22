@@ -40,6 +40,7 @@ class KeyPersonaApp {
         this.RetryAllowed := Map()
         this.ProfilePolicyRefreshNeeded := false
         this.ApplyGeneration := 0
+        this.ExplicitApplyGeneration := 0
         this.ForegroundSequence := 0
         this.PendingForegroundHwnd := 0
         this.PendingForegroundDue := 0
@@ -629,9 +630,34 @@ class KeyPersonaApp {
         state["source"] := "rule"
         this.CurrentRule := this.MatchRule(this.CurrentWindow)
         this.CurrentSource := "rule"
-        this.ApplyState(this.CurrentWindow, state, "window-default")
-        TrayTip("已设置当前窗口的默认输入法；旧自动记忆已清除。", AppInfo.Name, "Mute")
+        this.ExplicitApplyGeneration += 1
+        generation := this.ExplicitApplyGeneration
+        targetWindow := StateClone(this.CurrentWindow)
+        SetTimer(ObjBindMethod(this, "ApplyExplicitWindowState",
+            generation, targetWindow, StateClone(state), 0), -50)
+        TrayTip("已设置当前窗口的默认输入法；返回窗口后立即切换。`n旧自动记忆已清除。",
+            AppInfo.Name, "Mute")
         this.Tray.Refresh(true)
+    }
+
+    ApplyExplicitWindowState(generation, targetWindow, state, attempt) {
+        if (generation != this.ExplicitApplyGeneration || this.ShuttingDown)
+            return
+        foreground := this.Identity.Resolve()
+        if KeyPersonaApp.IsSameTopLevelWindow(targetWindow, foreground) {
+            this.CurrentWindow := targetWindow
+            this.CurrentRule := this.MatchRule(targetWindow)
+            this.CurrentSource := "rule"
+            this.ApplyState(targetWindow, state, "window-default")
+            this.Tray.Refresh(true)
+            return
+        }
+        if (attempt < 39) {
+            SetTimer(ObjBindMethod(this, "ApplyExplicitWindowState",
+                generation, targetWindow, state, attempt + 1), -50)
+            return
+        }
+        this.Logger.Debug("Deferred explicit input state until the target window becomes foreground")
     }
 
     UseGlobalForCurrentWindow(*) {
@@ -776,6 +802,7 @@ class KeyPersonaApp {
         if this.ShuttingDown
             return
         this.ShuttingDown := true
+        this.ExplicitApplyGeneration += 1
         try SetTimer(this.PollCallback, 0)
         try SetTimer(this.FlushCallback, 0)
         try this.Hook.Stop()
