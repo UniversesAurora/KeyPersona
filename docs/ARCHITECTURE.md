@@ -278,7 +278,8 @@ KeyPersona/
 │  └─ releases/
 │     ├─ v1.0.0.md
 │     ├─ v1.1.0.md
-│     └─ v1.1.1.md
+│     ├─ v1.1.1.md
+│     └─ v1.2.0.md
 ├─ lib/
 │  ├─ AppInfo.ahk
 │  ├─ LegacyMigration.ahk
