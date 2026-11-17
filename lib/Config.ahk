@@ -32,7 +32,7 @@ class KeyPersonaConfig {
         this.PunctuationPairs := Map()
         for rule in PunctuationCatalog.Rules {
             id := rule["id"]
-            this.PunctuationConvert[id] := ParseBool(this.Doc.Get("punctuation", "convert." id, "1"), true)
+            this.PunctuationConvert[id] := ParseBool(this.Doc.Get("punctuation", "convert." id, "0"))
             if (rule["close"] != "")
                 this.PunctuationPairs[id] := ParseBool(this.Doc.Get("punctuation", "pair." id, "0"))
         }
@@ -460,7 +460,7 @@ class KeyPersonaConfig {
             . "ignoreClassRegex=i)^(Progman|WorkerW|Shell_(Secondary)?TrayWnd|TopLevelWindowForOverflowXamlIsland|NotifyIconOverflowWindow|XamlExplorerHostIslandWindow|tooltips_class32|IME)$`n`n"
             . "[punctuation]`n"
             . "enabled=0`n"
-            . "; convert.<名称>=1 启用转换，pair.<名称>=1 自动补齐。默认转换开启、补齐关闭。`n`n"
+            . "; convert.<名称>=1 启用转换，pair.<名称>=1 自动补齐。所有选项默认关闭。`n`n"
             . "[state.english-us]`n"
             . "profile=0409:00000409`n"
             . "imeOpen=unknown`n"

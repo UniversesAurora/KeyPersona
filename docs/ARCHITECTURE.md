@@ -248,7 +248,7 @@ Windows 没有一个文档化广播能同时覆盖 Win+Space、语言栏点击�
 
 每次符合条件的按键会发送对应的 Unicode ASCII 字符。关闭中文模式或无法识别状态时放行原按键，不改输入源，不修改剪贴板或已有文本。输出使用一次 `SendInput`，补齐时同时发送两个字符和向左移动一次，避免 Shift 使光标移动变成选区。
 
-`[punctuation]` 保存 `enabled`、`convert.<id>` 和 `pair.<id>`。每类转换默认开启，自动补齐默认关闭；总开关默认关闭。旧 `[typing] backtickInChinese` 仅在存在时迁移为新总开关和 `convert.backtick`，删除旧键；已有新配置优先，不保留旧配置回退路径。
+`[punctuation]` 保存 `enabled`、`convert.<id>` 和 `pair.<id>`。总开关、每类转换和自动补齐都默认关闭，已有显式设置优先。旧 `[typing] backtickInChinese` 仅在存在时迁移为新总开关和 `convert.backtick`，删除旧键；已有新配置优先，不保留旧配置回退路径。
 
 `[punctuation-app.<名称>]` 使用 `exe` 匹配应用，`pair.<id>=1/0` 分别表示强制开启/关闭该应用的补齐；缺少该键时跟随全局。覆盖只影响补齐，不绕过转换总开关或逐项转换开关。通过菜单恢复全部跟随全局时删除该应用的补齐配置段。
 
