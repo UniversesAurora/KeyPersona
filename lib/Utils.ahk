@@ -141,7 +141,7 @@ IsChineseLanguageState(state) {
     return false
 }
 
-ShouldReplaceBacktickState(profileState, imeOpen, optionEnabled := true, appEnabled := true) {
+ShouldReplacePunctuationState(profileState, imeOpen, optionEnabled := true, appEnabled := true) {
     return optionEnabled && appEnabled && HasKnownProfile(profileState)
         && IsChineseLanguageState(profileState) && (imeOpen = "1")
 }

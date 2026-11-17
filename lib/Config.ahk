@@ -12,6 +12,7 @@ class KeyPersonaConfig {
 
     Reload() {
         this.Doc := IniDocument.Load(this.Path)
+        this.MigratePunctuationSettings()
         this.Enabled := ParseBool(this.Doc.Get("general", "enabled", "1"), true)
         this.AutoMemory := ParseBool(this.Doc.Get("general", "autoMemory", "1"), true)
         this.DefaultState := this.Doc.Get("general", "defaultState", "wetype-chinese")
@@ -26,10 +27,35 @@ class KeyPersonaConfig {
         this.WindowModeExe := SplitCsv(this.Doc.Get("identity", "windowModeExe", "msedge.exe,chrome.exe,firefox.exe,explorer.exe,zettlr.exe"))
         this.IgnoreExe := SplitCsv(this.Doc.Get("identity", "ignoreExe", "autohotkey64.exe,autohotkey32.exe,textinputhost.exe,searchhost.exe,startmenuexperiencehost.exe"))
         this.IgnoreClassRegex := this.Doc.Get("identity", "ignoreClassRegex", "i)^(Progman|WorkerW|Shell_(Secondary)?TrayWnd|TopLevelWindowForOverflowXamlIsland|NotifyIconOverflowWindow|XamlExplorerHostIslandWindow|tooltips_class32|IME)$")
-        this.BacktickInChinese := ParseBool(this.Doc.Get("typing", "backtickInChinese", "0"), false)
+        this.PunctuationEnabled := ParseBool(this.Doc.Get("punctuation", "enabled", "0"))
+        this.PunctuationConvert := Map()
+        this.PunctuationPairs := Map()
+        for rule in PunctuationCatalog.Rules {
+            id := rule["id"]
+            this.PunctuationConvert[id] := ParseBool(this.Doc.Get("punctuation", "convert." id, "1"), true)
+            if (rule["close"] != "")
+                this.PunctuationPairs[id] := ParseBool(this.Doc.Get("punctuation", "pair." id, "0"))
+        }
+        this.PunctuationApps := this.LoadPunctuationApps()
+        this.PunctuationRevision := this.HasOwnProp("PunctuationRevision") ? this.PunctuationRevision + 1 : 1
         this.NamedStates := this.LoadNamedStates()
         this.RuleSections := this.LoadPrefixedSections("rule.")
         this.WindowRules := this.LoadWindowRules()
+    }
+
+    MigratePunctuationSettings() {
+        if (!this.Doc.Sections.Has("typing") || !this.Doc.Sections["typing"].Has("backtickInChinese"))
+            return
+        oldValue := ParseBool(this.Doc.Sections["typing"]["backtickInChinese"]) ? "1" : "0"
+        newValues := MapGet(this.Doc.Sections, "punctuation", Map())
+        if !newValues.Has("enabled")
+            IniWrite(oldValue, this.Path, "punctuation", "enabled")
+        if !newValues.Has("convert.backtick")
+            IniWrite(oldValue, this.Path, "punctuation", "convert.backtick")
+        IniDelete(this.Path, "typing", "backtickInChinese")
+        if (this.Doc.Sections["typing"].Count = 1)
+            IniDelete(this.Path, "typing")
+        this.Doc := IniDocument.Load(this.Path)
     }
 
     LoadNamedStates() {
@@ -276,11 +302,83 @@ class KeyPersonaConfig {
         return this.AutoMemory
     }
 
-    SetBacktickInChinese(enabled) {
-        value := enabled ? "1" : "0"
-        IniWrite(value, this.Path, "typing", "backtickInChinese")
-        this.BacktickInChinese := !!enabled
-        return this.BacktickInChinese
+    SetPunctuationEnabled(enabled) {
+        IniWrite(enabled ? "1" : "0", this.Path, "punctuation", "enabled")
+        this.PunctuationEnabled := !!enabled
+        this.PunctuationRevision += 1
+    }
+
+    SetPunctuationOption(id, pair, enabled) {
+        rule := PunctuationCatalog.Find(id)
+        if !rule.Count || (pair && rule["close"] = "")
+            return false
+        IniWrite(enabled ? "1" : "0", this.Path, "punctuation", (pair ? "pair." : "convert.") id)
+        options := pair ? this.PunctuationPairs : this.PunctuationConvert
+        options[id] := !!enabled
+        this.PunctuationRevision += 1
+        return true
+    }
+
+    LoadPunctuationApps() {
+        apps := Map()
+        for section, values in this.Doc.Sections {
+            if !RegExMatch(section, "i)^punctuation-app\.")
+                continue
+            exe := StrLower(Trim(MapGet(values, "exe", "")))
+            if (exe = "")
+                continue
+            overrides := Map()
+            for rule in PunctuationCatalog.Rules {
+                value := MapGet(values, "pair." rule["id"], "inherit")
+                if (rule["close"] != "" && (value = "0" || value = "1"))
+                    overrides[rule["id"]] := value = "1"
+            }
+            apps[exe] := Map("section", section, "pairs", overrides)
+        }
+        return apps
+    }
+
+    GetAppPunctuationPair(exe, id) {
+        exe := StrLower(exe)
+        if !this.PunctuationApps.Has(exe)
+            return "inherit"
+        return MapGet(this.PunctuationApps[exe]["pairs"], id, "inherit")
+    }
+
+    ShouldPairPunctuation(exe, id) {
+        override := this.GetAppPunctuationPair(exe, id)
+        return override = "inherit" ? MapGet(this.PunctuationPairs, id, false) : !!override
+    }
+
+    SetAppPunctuationPair(exe, id, mode) {
+        exe := StrLower(Trim(exe))
+        rule := PunctuationCatalog.Find(id)
+        if (exe = "" || !rule.Count || rule["close"] = ""
+            || (mode != "inherit" && mode != "0" && mode != "1"))
+            return false
+        section := this.PunctuationApps.Has(exe) ? this.PunctuationApps[exe]["section"]
+            : "punctuation-app." Fnv1a32(exe)
+        if (mode = "inherit") {
+            if this.PunctuationApps.Has(exe)
+                IniDelete(this.Path, section, "pair." id)
+        } else {
+            IniWrite(exe, this.Path, section, "exe")
+            IniWrite(mode, this.Path, section, "pair." id)
+        }
+        this.Reload()
+        if (this.PunctuationApps.Has(exe) && !this.PunctuationApps[exe]["pairs"].Count) {
+            IniDelete(this.Path, section)
+            this.Reload()
+        }
+        return true
+    }
+
+    ClearAppPunctuationPairs(exe) {
+        exe := StrLower(exe)
+        if !this.PunctuationApps.Has(exe)
+            return
+        IniDelete(this.Path, this.PunctuationApps[exe]["section"])
+        this.Reload()
     }
 
     GetWindowRule(windowInfo) {
@@ -360,8 +458,9 @@ class KeyPersonaConfig {
             . "windowModeExe=msedge.exe,chrome.exe,firefox.exe,explorer.exe,zettlr.exe`n"
             . "ignoreExe=autohotkey64.exe,autohotkey32.exe,textinputhost.exe,searchhost.exe,startmenuexperiencehost.exe`n"
             . "ignoreClassRegex=i)^(Progman|WorkerW|Shell_(Secondary)?TrayWnd|TopLevelWindowForOverflowXamlIsland|NotifyIconOverflowWindow|XamlExplorerHostIslandWindow|tooltips_class32|IME)$`n`n"
-            . "[typing]`n"
-            . "backtickInChinese=0`n`n"
+            . "[punctuation]`n"
+            . "enabled=0`n"
+            . "; convert.<名称>=1 启用转换，pair.<名称>=1 自动补齐。默认转换开启、补齐关闭。`n`n"
             . "[state.english-us]`n"
             . "profile=0409:00000409`n"
             . "imeOpen=unknown`n"

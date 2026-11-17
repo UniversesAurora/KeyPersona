@@ -6,7 +6,7 @@ class TrayMenuController {
         this.LastFingerprint := ""
         this.StateMenu := ""
         this.DefaultMenu := ""
-        this.BacktickLabel := "中文模式下反引号键输出 " Chr(96)
+        this.PunctuationMenu := ""
         this.About := AboutDialog()
         this.LastLeftClick := 0
         this.TrayMessageCallback := ObjBindMethod(this, "OnTrayMessage")
@@ -27,7 +27,7 @@ class TrayMenuController {
         fingerprint := this.App.Enabled "|" MapGet(window, "hwnd", 0) "|"
             . StateSignature(state) "|" MapGet(rule, "name", "") "|"
             . this.App.CurrentSource "|" this.App.Config.DefaultState "|"
-            . this.App.Config.AutoMemory "|" this.App.Config.BacktickInChinese
+            . this.App.Config.AutoMemory "|" this.App.Config.PunctuationRevision
         if !force && fingerprint = this.LastFingerprint
             return
         this.LastFingerprint := fingerprint
@@ -95,9 +95,8 @@ class TrayMenuController {
             tray.Disable("清除当前窗口的自动记忆")
         }
         tray.Add()
-        tray.Add(this.BacktickLabel, ObjBindMethod(this.App, "ToggleBacktickInChinese"))
-        if this.App.Config.BacktickInChinese
-            tray.Check(this.BacktickLabel)
+        this.PunctuationMenu := this.BuildPunctuationMenu(window)
+        tray.Add("中文符号转英文", this.PunctuationMenu)
         tray.Add()
         tray.Add("打开配置文件", ObjBindMethod(this, "OpenConfig"))
         tray.Add("打开状态文件", ObjBindMethod(this, "OpenState"))
@@ -105,6 +104,91 @@ class TrayMenuController {
         tray.Add()
         tray.Add("关于 " AppInfo.Name, ObjBindMethod(this, "ShowAbout"))
         tray.Add("退出", ObjBindMethod(this, "ExitApplication"))
+    }
+
+    BuildPunctuationMenu(window) {
+        config := this.App.Config
+        symbols := Menu()
+        symbols.Add("启用转换", ObjBindMethod(this, "TogglePunctuation"))
+        if config.PunctuationEnabled
+            symbols.Check("启用转换")
+        symbols.Add()
+        for group, groupLabel in Map("common", "常用标点", "pairs", "括号与引号", "other", "其他符号") {
+            category := Menu()
+            for rule in PunctuationCatalog.Rules {
+                if (rule["group"] != group)
+                    continue
+                id := rule["id"]
+                if (rule["close"] = "") {
+                    category.Add(rule["label"], ObjBindMethod(this, "TogglePunctuationOption", id, false))
+                    if config.PunctuationConvert[id]
+                        category.Check(rule["label"])
+                } else {
+                    pairMenu := Menu()
+                    pairMenu.Add("转换为英文", ObjBindMethod(this, "TogglePunctuationOption", id, false))
+                    if config.PunctuationConvert[id]
+                        pairMenu.Check("转换为英文")
+                    pairMenu.Add("自动补齐（全局）", ObjBindMethod(this, "TogglePunctuationOption", id, true))
+                    if config.PunctuationPairs[id]
+                        pairMenu.Check("自动补齐（全局）")
+                    category.Add(rule["label"], pairMenu)
+                    if config.PunctuationConvert[id]
+                        category.Check(rule["label"])
+                }
+            }
+            symbols.Add(groupLabel, category)
+        }
+        symbols.Add()
+        exe := MapGet(window, "exe", "")
+        appLabel := "当前应用自动补齐" (exe != "" ? "（" StrReplace(exe, "&", "&&") "）" : "")
+        if (exe = "") {
+            symbols.Add(appLabel, (*) => 0)
+            symbols.Disable(appLabel)
+        } else {
+            appMenu := Menu()
+            appMenu.Add("全部跟随全局", ObjBindMethod(this, "ClearAppPunctuationPairs", exe))
+            if !config.PunctuationApps.Has(StrLower(exe))
+                appMenu.Check("全部跟随全局")
+            appMenu.Add()
+            for rule in PunctuationCatalog.Rules {
+                if (rule["close"] = "")
+                    continue
+                id := rule["id"]
+                override := config.GetAppPunctuationPair(exe, id)
+                perPair := Menu()
+                inheritLabel := "跟随全局（" (config.PunctuationPairs[id] ? "开启" : "关闭") "）"
+                perPair.Add(inheritLabel, ObjBindMethod(this, "SetAppPunctuationPair", exe, id, "inherit"))
+                perPair.Add("开启", ObjBindMethod(this, "SetAppPunctuationPair", exe, id, "1"))
+                perPair.Add("关闭", ObjBindMethod(this, "SetAppPunctuationPair", exe, id, "0"))
+                perPair.Check(override = "inherit" ? inheritLabel : override ? "开启" : "关闭")
+                appMenu.Add(rule["label"], perPair)
+                if config.ShouldPairPunctuation(exe, id)
+                    appMenu.Check(rule["label"])
+            }
+            symbols.Add(appLabel, appMenu)
+        }
+        return symbols
+    }
+
+    TogglePunctuation(*) {
+        this.App.Config.SetPunctuationEnabled(!this.App.Config.PunctuationEnabled)
+        this.Refresh(true)
+    }
+
+    TogglePunctuationOption(id, pair, *) {
+        options := pair ? this.App.Config.PunctuationPairs : this.App.Config.PunctuationConvert
+        this.App.Config.SetPunctuationOption(id, pair, !options[id])
+        this.Refresh(true)
+    }
+
+    SetAppPunctuationPair(exe, id, mode, *) {
+        this.App.Config.SetAppPunctuationPair(exe, id, mode)
+        this.Refresh(true)
+    }
+
+    ClearAppPunctuationPairs(exe, *) {
+        this.App.Config.ClearAppPunctuationPairs(exe)
+        this.Refresh(true)
     }
 
     StateMenuLabel(stateName, namedState) {

@@ -18,10 +18,31 @@ RunSelfTests(baseDir) {
     AssertTest(!IsChineseLanguageState(Map("langId", "0409")), "Non-Chinese language rejection", failures)
     chineseProfile := Map("profile", "0804:sample", "langId", "0804")
     englishProfile := Map("profile", "0409:00000409", "langId", "0409")
-    AssertTest(ShouldReplaceBacktickState(chineseProfile, "1"), "Backtick replacement in Chinese mode", failures)
-    AssertTest(!ShouldReplaceBacktickState(chineseProfile, "0"), "Backtick pass-through in IME English mode", failures)
-    AssertTest(!ShouldReplaceBacktickState(englishProfile, "1"), "Backtick pass-through for non-Chinese input", failures)
-    AssertTest(!ShouldReplaceBacktickState(chineseProfile, "1", false), "Backtick option disables replacement", failures)
+    AssertTest(ShouldReplacePunctuationState(chineseProfile, "1"), "Punctuation replacement in Chinese mode", failures)
+    AssertTest(!ShouldReplacePunctuationState(chineseProfile, "0"), "Punctuation pass-through in IME English mode", failures)
+    AssertTest(!ShouldReplacePunctuationState(englishProfile, "1"), "Punctuation pass-through for non-Chinese input", failures)
+    AssertTest(!ShouldReplacePunctuationState(chineseProfile, "unknown"), "Unknown IME state passes punctuation through", failures)
+    AssertTest(!ShouldReplacePunctuationState(chineseProfile, "1", false), "Punctuation option disables replacement", failures)
+    punctuationKeys := Map()
+    punctuationChars := Map()
+    for rule in PunctuationCatalog.Rules {
+        for binding in rule["bindings"] {
+            AssertTest(!punctuationKeys.Has(binding["key"]), "Punctuation keys have no duplicates", failures)
+            punctuationKeys[binding["key"]] := binding["text"]
+            punctuationChars[binding["text"]] := true
+        }
+    }
+    AssertTest(punctuationKeys.Count = 32 && punctuationChars.Count = 32,
+        "All US keyboard punctuation keys are covered exactly once", failures)
+    AssertTest(punctuationKeys["$+SC005"] = "$" && punctuationKeys["$+SC007"] = "^"
+        && punctuationKeys["$+SC00C"] = "_" && punctuationKeys["$SC02B"] = "\",
+        "Currency ellipsis dash and enumeration keys use US outputs", failures)
+    AssertTest(PunctuationCatalog.SendSequence("(", ")") = "{U+0028}{U+0029}{Left 1}",
+        "Auto pair inserts both characters and puts the caret between them", failures)
+    AssertTest(PunctuationCatalog.SendSequence(")") = "{U+0029}",
+        "Closing punctuation has no extra pair or cursor move", failures)
+    AssertTest(PunctuationCatalog.SendSequence("{") = "{U+007B}",
+        "Send metacharacters are inserted literally", failures)
     AssertTest(AppInfo.Name != "" && AppInfo.ExecutableFile != "", "Central application identity", failures)
     noOpProbe := ImeModeNoOpProbe()
     noOpState := Map("imeOpen", "1", "conversion", "0x1", "sentence", "0x8")
@@ -77,7 +98,17 @@ RunSelfTests(baseDir) {
     editableConfig := KeyPersonaConfig(tempConfigDir)
     AssertTest(editableConfig.SetDefaultState("english-us"), "Default state write", failures)
     AssertTest(!editableConfig.SetAutoMemory(false), "Automatic memory setting write", failures)
-    AssertTest(editableConfig.SetBacktickInChinese(true), "Backtick option write", failures)
+    editableConfig.SetPunctuationEnabled(true)
+    AssertTest(editableConfig.SetPunctuationOption("parentheses", true, true), "Global auto pair setting write", failures)
+    AssertTest(editableConfig.SetPunctuationOption("dollar", false, false), "Individual punctuation toggle write", failures)
+    AssertTest(editableConfig.SetAppPunctuationPair("Code.exe", "parentheses", "0"), "Per-app auto pair override write", failures)
+    AssertTest(!editableConfig.ShouldPairPunctuation("CODE.EXE", "parentheses")
+        && editableConfig.ShouldPairPunctuation("Notepad.exe", "parentheses"),
+        "App disable overrides global enable without affecting other apps", failures)
+    AssertTest(editableConfig.SetAppPunctuationPair("Code.exe", "doubleQuote", "1")
+        && editableConfig.ShouldPairPunctuation("Code.exe", "doubleQuote")
+        && !editableConfig.ShouldPairPunctuation("Notepad.exe", "doubleQuote"),
+        "App enable overrides global disable for a separate pair", failures)
     discoveredChineseId := "0804:{11111111-1111-1111-1111-111111111111}{22222222-2222-2222-2222-222222222222}"
     discoveredKeyboardId := "0411:00000411"
     discoveredCatalog := Map(
@@ -143,7 +174,30 @@ RunSelfTests(baseDir) {
     reloadedConfig := KeyPersonaConfig(tempConfigDir)
     AssertTest(reloadedConfig.DefaultState = "english-us", "Default state reload", failures)
     AssertTest(!reloadedConfig.AutoMemory, "Automatic memory setting reload", failures)
-    AssertTest(reloadedConfig.BacktickInChinese, "Backtick option reload", failures)
+    AssertTest(reloadedConfig.PunctuationEnabled && reloadedConfig.PunctuationPairs["parentheses"]
+        && !reloadedConfig.PunctuationConvert["dollar"], "Punctuation global options reload", failures)
+    AssertTest(!reloadedConfig.ShouldPairPunctuation("Code.exe", "parentheses")
+        && reloadedConfig.ShouldPairPunctuation("Code.exe", "doubleQuote"), "Punctuation app options reload", failures)
+    reloadedConfig.SetAppPunctuationPair("Code.exe", "parentheses", "inherit")
+    AssertTest(reloadedConfig.ShouldPairPunctuation("Code.exe", "parentheses")
+        && reloadedConfig.GetAppPunctuationPair("Code.exe", "parentheses") = "inherit",
+        "Individual app pair can return to the global setting", failures)
+    reloadedConfig.ClearAppPunctuationPairs("Code.exe")
+    AssertTest(!reloadedConfig.PunctuationApps.Has("code.exe")
+        && !reloadedConfig.ShouldPairPunctuation("Code.exe", "doubleQuote"),
+        "All app pair overrides can return to global without removing global options", failures)
+    IniDelete(reloadedConfig.Path, "punctuation")
+    IniWrite("1", reloadedConfig.Path, "typing", "backtickInChinese")
+    reloadedConfig.Reload()
+    AssertTest(reloadedConfig.PunctuationEnabled && reloadedConfig.PunctuationConvert["backtick"]
+        && !reloadedConfig.PunctuationPairs["backtick"] && !reloadedConfig.Doc.Sections.Has("typing")
+        && reloadedConfig.Doc.Get("punctuation", "convert.backtick", "") = "1",
+        "Existing backtick setting migrates once and removes the old key", failures)
+    reloadedConfig.SetPunctuationEnabled(false)
+    IniWrite("1", reloadedConfig.Path, "typing", "backtickInChinese")
+    reloadedConfig.Reload()
+    AssertTest(!reloadedConfig.PunctuationEnabled && !reloadedConfig.Doc.Sections.Has("typing"),
+        "Migration keeps explicit new settings", failures)
     AssertTest(reloadedConfig.GetWindowRule(configWindow).Count > 0, "Window rule reload", failures)
     AssertTest(reloadedConfig.RemoveWindowRule(configWindow), "Window rule removal", failures)
     AssertTest(!reloadedConfig.GetWindowRule(configWindow).Count, "Window rule removal verification", failures)
