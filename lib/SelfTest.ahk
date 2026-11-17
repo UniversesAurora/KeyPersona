@@ -101,14 +101,30 @@ RunSelfTests(baseDir) {
     editableConfig.SetPunctuationEnabled(true)
     AssertTest(editableConfig.SetPunctuationOption("parentheses", true, true), "Global auto pair setting write", failures)
     AssertTest(editableConfig.SetPunctuationOption("dollar", false, false), "Individual punctuation toggle write", failures)
-    AssertTest(editableConfig.SetAppPunctuationPair("Code.exe", "parentheses", "0"), "Per-app auto pair override write", failures)
+    AssertTest(editableConfig.SetAppPunctuationOption("Code.exe", "parentheses", true, "0"), "Per-app auto pair override write", failures)
     AssertTest(!editableConfig.ShouldPairPunctuation("CODE.EXE", "parentheses")
         && editableConfig.ShouldPairPunctuation("Notepad.exe", "parentheses"),
         "App disable overrides global enable without affecting other apps", failures)
-    AssertTest(editableConfig.SetAppPunctuationPair("Code.exe", "doubleQuote", "1")
+    AssertTest(editableConfig.SetAppPunctuationOption("Code.exe", "doubleQuote", true, "1")
         && editableConfig.ShouldPairPunctuation("Code.exe", "doubleQuote")
         && !editableConfig.ShouldPairPunctuation("Notepad.exe", "doubleQuote"),
         "App enable overrides global disable for a separate pair", failures)
+    editableConfig.SetPunctuationEnabled(false)
+    editableConfig.SetAppPunctuationOption("Code.exe", "", false, "1")
+    editableConfig.SetAppPunctuationOption("Code.exe", "dollar", false, "1")
+    AssertTest(editableConfig.ShouldConvertPunctuation("CODE.EXE", "dollar")
+        && !editableConfig.ShouldConvertPunctuation("Notepad.exe", "dollar"),
+        "Per-app master and conversion overrides work with global defaults off", failures)
+    editableConfig.SetPunctuationOption("comma", false, true)
+    editableConfig.SetAppPunctuationOption("Code.exe", "comma", false, "0")
+    AssertTest(!editableConfig.ShouldConvertPunctuation("Code.exe", "comma"),
+        "An app can disable a globally enabled symbol", failures)
+    editableConfig.SetAppPunctuationOption("Code.exe", "dollar", false, "inherit")
+    AssertTest(!editableConfig.ShouldConvertPunctuation("Code.exe", "dollar")
+        && editableConfig.ShouldPairPunctuation("Code.exe", "doubleQuote"),
+        "Restoring conversion inheritance preserves independent auto pair settings", failures)
+    editableConfig.SetAppPunctuationOption("Code.exe", "dollar", false, "1")
+    editableConfig.SetPunctuationEnabled(true)
     discoveredChineseId := "0804:{11111111-1111-1111-1111-111111111111}{22222222-2222-2222-2222-222222222222}"
     discoveredKeyboardId := "0411:00000411"
     discoveredCatalog := Map(
@@ -178,14 +194,19 @@ RunSelfTests(baseDir) {
         && !reloadedConfig.PunctuationConvert["dollar"], "Punctuation global options reload", failures)
     AssertTest(!reloadedConfig.ShouldPairPunctuation("Code.exe", "parentheses")
         && reloadedConfig.ShouldPairPunctuation("Code.exe", "doubleQuote"), "Punctuation app options reload", failures)
-    reloadedConfig.SetAppPunctuationPair("Code.exe", "parentheses", "inherit")
+    AssertTest(reloadedConfig.ShouldConvertPunctuation("Code.exe", "dollar")
+        && !reloadedConfig.ShouldConvertPunctuation("Code.exe", "comma"), "Conversion app options reload", failures)
+    reloadedConfig.SetAppPunctuationOption("Code.exe", "parentheses", true, "inherit")
     AssertTest(reloadedConfig.ShouldPairPunctuation("Code.exe", "parentheses")
-        && reloadedConfig.GetAppPunctuationPair("Code.exe", "parentheses") = "inherit",
+        && reloadedConfig.GetAppPunctuationOption("Code.exe", "parentheses", true) = "inherit",
         "Individual app pair can return to the global setting", failures)
-    reloadedConfig.ClearAppPunctuationPairs("Code.exe")
+    AssertTest(reloadedConfig.ShouldConvertPunctuation("Code.exe", "dollar"),
+        "Restoring auto pair inheritance keeps conversion overrides", failures)
+    reloadedConfig.ClearAppPunctuationOptions("Code.exe")
     AssertTest(!reloadedConfig.PunctuationApps.Has("code.exe")
-        && !reloadedConfig.ShouldPairPunctuation("Code.exe", "doubleQuote"),
-        "All app pair overrides can return to global without removing global options", failures)
+        && !reloadedConfig.ShouldPairPunctuation("Code.exe", "doubleQuote")
+        && !reloadedConfig.ShouldConvertPunctuation("Code.exe", "dollar"),
+        "All app options can return to global without removing global options", failures)
     IniDelete(reloadedConfig.Path, "punctuation")
     IniWrite("1", reloadedConfig.Path, "typing", "backtickInChinese")
     reloadedConfig.Reload()

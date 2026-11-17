@@ -327,53 +327,82 @@ class KeyPersonaConfig {
             exe := StrLower(Trim(MapGet(values, "exe", "")))
             if (exe = "")
                 continue
-            overrides := Map()
+            conversion := Map()
+            pairs := Map()
+            enabled := MapGet(values, "enabled", "inherit")
+            if (enabled != "0" && enabled != "1")
+                enabled := "inherit"
+            else
+                enabled := enabled = "1"
             for rule in PunctuationCatalog.Rules {
+                convertValue := MapGet(values, "convert." rule["id"], "inherit")
+                if (convertValue = "0" || convertValue = "1")
+                    conversion[rule["id"]] := convertValue = "1"
                 value := MapGet(values, "pair." rule["id"], "inherit")
                 if (rule["close"] != "" && (value = "0" || value = "1"))
-                    overrides[rule["id"]] := value = "1"
+                    pairs[rule["id"]] := value = "1"
             }
-            apps[exe] := Map("section", section, "pairs", overrides)
+            apps[exe] := Map("section", section, "enabled", enabled, "convert", conversion, "pairs", pairs)
         }
         return apps
     }
 
-    GetAppPunctuationPair(exe, id) {
+    GetAppPunctuationOption(exe, id := "", pair := false) {
         exe := StrLower(exe)
         if !this.PunctuationApps.Has(exe)
             return "inherit"
-        return MapGet(this.PunctuationApps[exe]["pairs"], id, "inherit")
+        app := this.PunctuationApps[exe]
+        if (id = "")
+            return app["enabled"]
+        return MapGet(app[pair ? "pairs" : "convert"], id, "inherit")
+    }
+
+    ResolvePunctuationOption(exe, id := "", pair := false) {
+        override := this.GetAppPunctuationOption(exe, id, pair)
+        if (override != "inherit")
+            return !!override
+        if (id = "")
+            return this.PunctuationEnabled
+        return MapGet(pair ? this.PunctuationPairs : this.PunctuationConvert, id, false)
+    }
+
+    ShouldConvertPunctuation(exe, id) {
+        return this.ResolvePunctuationOption(exe) && this.ResolvePunctuationOption(exe, id)
     }
 
     ShouldPairPunctuation(exe, id) {
-        override := this.GetAppPunctuationPair(exe, id)
-        return override = "inherit" ? MapGet(this.PunctuationPairs, id, false) : !!override
+        return this.ResolvePunctuationOption(exe, id, true)
     }
 
-    SetAppPunctuationPair(exe, id, mode) {
+    SetAppPunctuationOption(exe, id, pair, mode) {
         exe := StrLower(Trim(exe))
         rule := PunctuationCatalog.Find(id)
-        if (exe = "" || !rule.Count || rule["close"] = ""
+        if (exe = "" || (id != "" && (!rule.Count || (pair && rule["close"] = "")))
+            || (id = "" && pair)
             || (mode != "inherit" && mode != "0" && mode != "1"))
             return false
         section := this.PunctuationApps.Has(exe) ? this.PunctuationApps[exe]["section"]
             : "punctuation-app." Fnv1a32(exe)
+        key := id = "" ? "enabled" : (pair ? "pair." : "convert.") id
         if (mode = "inherit") {
             if this.PunctuationApps.Has(exe)
-                IniDelete(this.Path, section, "pair." id)
+                IniDelete(this.Path, section, key)
         } else {
             IniWrite(exe, this.Path, section, "exe")
-            IniWrite(mode, this.Path, section, "pair." id)
+            IniWrite(mode, this.Path, section, key)
         }
         this.Reload()
-        if (this.PunctuationApps.Has(exe) && !this.PunctuationApps[exe]["pairs"].Count) {
-            IniDelete(this.Path, section)
-            this.Reload()
+        if this.PunctuationApps.Has(exe) {
+            app := this.PunctuationApps[exe]
+            if (app["enabled"] = "inherit" && !app["convert"].Count && !app["pairs"].Count) {
+                IniDelete(this.Path, section)
+                this.Reload()
+            }
         }
         return true
     }
 
-    ClearAppPunctuationPairs(exe) {
+    ClearAppPunctuationOptions(exe) {
         exe := StrLower(exe)
         if !this.PunctuationApps.Has(exe)
             return

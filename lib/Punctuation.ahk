@@ -83,16 +83,14 @@ class PunctuationController {
     }
 
     ShouldReplace(id, *) {
-        if (!this.App.Enabled || this.App.ShuttingDown
-            || !this.App.Config.PunctuationEnabled
-            || !MapGet(this.App.Config.PunctuationConvert, id, false))
+        if (!this.App.Enabled || this.App.ShuttingDown)
             return false
         ; Shift selects the punctuation variant; other shortcut modifiers pass through.
         if (GetKeyState("Ctrl", "P") || GetKeyState("Alt", "P")
             || GetKeyState("LWin", "P") || GetKeyState("RWin", "P"))
             return false
         window := this.App.Identity.Resolve()
-        if !window.Count
+        if (!window.Count || !this.App.Config.ShouldConvertPunctuation(MapGet(window, "exe", ""), id))
             return false
         profile := this.App.Profiles.Read(window)
         imeOpen := IsChineseLanguageState(profile) ? this.App.Mode.ReadOpenStatus(window, 30) : "unknown"

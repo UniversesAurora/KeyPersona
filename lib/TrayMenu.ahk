@@ -109,9 +109,9 @@ class TrayMenuController {
     BuildPunctuationMenu(window) {
         config := this.App.Config
         symbols := Menu()
-        symbols.Add("启用转换", ObjBindMethod(this, "TogglePunctuation"))
+        symbols.Add("启用转换（全局）", ObjBindMethod(this, "TogglePunctuation"))
         if config.PunctuationEnabled
-            symbols.Check("启用转换")
+            symbols.Check("启用转换（全局）")
         symbols.Add()
         for group, groupLabel in Map("common", "常用标点", "pairs", "括号与引号", "other", "其他符号") {
             category := Menu()
@@ -140,34 +140,57 @@ class TrayMenuController {
         }
         symbols.Add()
         exe := MapGet(window, "exe", "")
-        appLabel := "当前应用自动补齐" (exe != "" ? "（" StrReplace(exe, "&", "&&") "）" : "")
+        appLabel := "当前应用符号设置" (exe != "" ? "（" StrReplace(exe, "&", "&&") "）" : "")
         if (exe = "") {
             symbols.Add(appLabel, (*) => 0)
             symbols.Disable(appLabel)
         } else {
             appMenu := Menu()
-            appMenu.Add("全部跟随全局", ObjBindMethod(this, "ClearAppPunctuationPairs", exe))
+            appMenu.Add("全部跟随全局", ObjBindMethod(this, "ClearAppPunctuationOptions", exe))
             if !config.PunctuationApps.Has(StrLower(exe))
                 appMenu.Check("全部跟随全局")
             appMenu.Add()
+            appMenu.Add("转换开关", this.BuildAppPunctuationOptionMenu(exe, "", false))
+            appConversion := Menu()
+            for group, groupLabel in Map("common", "常用标点", "pairs", "括号与引号", "other", "其他符号") {
+                category := Menu()
+                for rule in PunctuationCatalog.Rules {
+                    if (rule["group"] != group)
+                        continue
+                    category.Add(rule["label"], this.BuildAppPunctuationOptionMenu(exe, rule["id"], false))
+                    if config.ResolvePunctuationOption(exe, rule["id"])
+                        category.Check(rule["label"])
+                }
+                appConversion.Add(groupLabel, category)
+            }
+            appMenu.Add("符号转换", appConversion)
+            appPairs := Menu()
             for rule in PunctuationCatalog.Rules {
                 if (rule["close"] = "")
                     continue
                 id := rule["id"]
-                override := config.GetAppPunctuationPair(exe, id)
-                perPair := Menu()
-                inheritLabel := "跟随全局（" (config.PunctuationPairs[id] ? "开启" : "关闭") "）"
-                perPair.Add(inheritLabel, ObjBindMethod(this, "SetAppPunctuationPair", exe, id, "inherit"))
-                perPair.Add("开启", ObjBindMethod(this, "SetAppPunctuationPair", exe, id, "1"))
-                perPair.Add("关闭", ObjBindMethod(this, "SetAppPunctuationPair", exe, id, "0"))
-                perPair.Check(override = "inherit" ? inheritLabel : override ? "开启" : "关闭")
-                appMenu.Add(rule["label"], perPair)
+                appPairs.Add(rule["label"], this.BuildAppPunctuationOptionMenu(exe, id, true))
                 if config.ShouldPairPunctuation(exe, id)
-                    appMenu.Check(rule["label"])
+                    appPairs.Check(rule["label"])
             }
+            appMenu.Add("自动补齐", appPairs)
             symbols.Add(appLabel, appMenu)
         }
         return symbols
+    }
+
+    BuildAppPunctuationOptionMenu(exe, id, pair) {
+        config := this.App.Config
+        override := config.GetAppPunctuationOption(exe, id, pair)
+        globalEnabled := id = "" ? config.PunctuationEnabled
+            : MapGet(pair ? config.PunctuationPairs : config.PunctuationConvert, id, false)
+        inheritLabel := "跟随全局（" (globalEnabled ? "开启" : "关闭") "）"
+        options := Menu()
+        options.Add(inheritLabel, ObjBindMethod(this, "SetAppPunctuationOption", exe, id, pair, "inherit"))
+        options.Add("开启", ObjBindMethod(this, "SetAppPunctuationOption", exe, id, pair, "1"))
+        options.Add("关闭", ObjBindMethod(this, "SetAppPunctuationOption", exe, id, pair, "0"))
+        options.Check(override = "inherit" ? inheritLabel : override ? "开启" : "关闭")
+        return options
     }
 
     TogglePunctuation(*) {
@@ -181,13 +204,13 @@ class TrayMenuController {
         this.Refresh(true)
     }
 
-    SetAppPunctuationPair(exe, id, mode, *) {
-        this.App.Config.SetAppPunctuationPair(exe, id, mode)
+    SetAppPunctuationOption(exe, id, pair, mode, *) {
+        this.App.Config.SetAppPunctuationOption(exe, id, pair, mode)
         this.Refresh(true)
     }
 
-    ClearAppPunctuationPairs(exe, *) {
-        this.App.Config.ClearAppPunctuationPairs(exe)
+    ClearAppPunctuationOptions(exe, *) {
+        this.App.Config.ClearAppPunctuationOptions(exe)
         this.Refresh(true)
     }
 
