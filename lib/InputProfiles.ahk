@@ -243,11 +243,29 @@ class InputProfiles {
         return length ? StrGet(chars, "UTF-16") : StrGet(locale, "UTF-16")
     }
 
-    Read(windowInfo, focus := unset) {
+    static GetThreadLayout(threadId) {
+        return threadId ? DllCall("user32\GetKeyboardLayout", "UInt", threadId, "Ptr") : 0
+    }
+
+    CanVerifyKeyboardWithLayout(actual) {
+        if !this.LastRefreshSucceeded || MapGet(actual, "kind", "") != "keyboard"
+            return false
+        hkl := Integer(MapGet(actual, "hkl", "0x0"))
+        langId := hkl & 0xFFFF
+        if !langId || InputProfiles.IsTransientLanguage(langId)
+            return false
+        candidates := MapGet(this.ByLanguage, Hex(langId, 4), [])
+        for candidate in candidates {
+            if candidate["kind"] != "keyboard"
+                return false
+        }
+        return candidates.Length > 0
+    }
+
+    Read(windowInfo, focus := unset, allowRefresh := true) {
         if !IsSet(focus)
             focus := this.Identity.GetFocusTarget(windowInfo)
-        threadId := focus["threadId"]
-        hkl := threadId ? DllCall("user32\GetKeyboardLayout", "UInt", threadId, "Ptr") : 0
+        hkl := InputProfiles.GetThreadLayout(focus["threadId"])
         langId := hkl & 0xFFFF
         profile := this.ResolveProfileForLanguage(langId, hkl)
         catalogKey := profile.Count ? StrLower(profile["id"]) : ""
@@ -369,8 +387,8 @@ class InputProfiles {
         return 0
     }
 
-    Switch(windowInfo, desiredState, focus) {
-        if !this.Identity.IsForegroundFocus(windowInfo, focus)
+    Switch(windowInfo, desiredState, focus, canWrite) {
+        if !canWrite()
             return false
         profileId := MapGet(desiredState, "profile", "")
         profile := MapGet(this.Catalog, StrLower(profileId), Map())
@@ -383,12 +401,12 @@ class InputProfiles {
         hkl := profile["kind"] = "tip" ? 0 : this.FindLoadedKeyboardLayout(profile)
         if !hkl
             hkl := DllCall("user32\LoadKeyboardLayoutW", "WStr", profile["layoutId"], "UInt", 0x2, "Ptr")
-        if (!hkl || (hkl & 0xFFFF) != profile["langId"]
-            || (profile["kind"] != "tip" && !InputProfiles.MatchesKeyboardLayout(profile, hkl))) {
+        if (!hkl || (profile["kind"] = "tip" ? (hkl & 0xFFFF) != profile["langId"]
+            : !InputProfiles.MatchesKeyboardLayout(profile, hkl))) {
             this.Logger.Warn("No matching keyboard layout handle for " profile["id"])
             return false
         }
-        if !this.Identity.IsForegroundFocus(windowInfo, focus)
+        if !canWrite()
             return false
         target := focus["hwnd"]
         ok := DllCall("user32\PostMessageW", "Ptr", target, "UInt", 0x0050, "Ptr", 0, "Ptr", hkl, "Int")

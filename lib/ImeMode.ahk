@@ -9,10 +9,9 @@ class ImeMode {
     static IMC_GETOPENSTATUS := 0x0005
     static IMC_SETOPENSTATUS := 0x0006
 
-    __New(identity, config, logger) {
+    __New(identity, config) {
         this.Identity := identity
         this.Config := config
-        this.Logger := logger
     }
 
     static Supports(profileKind) {
@@ -35,7 +34,16 @@ class ImeMode {
         return open = "1" ? "输入法开启" : "输入法关闭"
     }
 
-    Read(windowInfo, profileKind := "tip", focus := unset) {
+    static NeedsDetailedMode(state) {
+        for field in ["conversion", "sentence"] {
+            value := MapGet(state, field, "unknown")
+            if (value != "" && value != "unknown" && value != "preserve")
+                return true
+        }
+        return false
+    }
+
+    Read(windowInfo, profileKind := "tip", focus := unset, readDetails := true) {
         state := Map("imeOpen", "unknown", "conversion", "unknown", "sentence", "unknown")
         if !ImeMode.Supports(profileKind)
             return state
@@ -43,8 +51,10 @@ class ImeMode {
         if !imeWindow
             return state
         deadline := TickCount64() + this.Config.MessageTimeoutMs
-        for query in [["imeOpen", ImeMode.IMC_GETOPENSTATUS], ["conversion", ImeMode.IMC_GETCONVERSIONMODE],
-            ["sentence", ImeMode.IMC_GETSENTENCEMODE]] {
+        queries := [["imeOpen", ImeMode.IMC_GETOPENSTATUS]]
+        if readDetails
+            queries.Push(["conversion", ImeMode.IMC_GETCONVERSIONMODE], ["sentence", ImeMode.IMC_GETSENTENCEMODE])
+        for query in queries {
             field := query[1]
             remaining := deadline - TickCount64()
             if (remaining <= 0)
@@ -65,42 +75,48 @@ class ImeMode {
         return open["ok"] ? (open["value"] ? "1" : "0") : "unknown"
     }
 
-    Apply(windowInfo, desiredState, focus := unset) {
+    Apply(windowInfo, desiredState, focus := unset, canWrite := unset) {
         imeWindow := this.GetImeWindow(windowInfo, focus?)
         if !imeWindow
             return false
+        deadline := TickCount64() + this.Config.MessageTimeoutMs
         success := true
         open := StrLower(MapGet(desiredState, "imeOpen", "unknown") "")
         if (open = "0" || open = "1") {
-            currentOpen := this.Control(imeWindow, ImeMode.IMC_GETOPENSTATUS, 0)
+            currentOpen := this.ControlBefore(imeWindow, ImeMode.IMC_GETOPENSTATUS, 0, deadline)
             if !currentOpen["ok"]
                 success := false
             else if (!!currentOpen["value"] != Integer(open))
-                success := this.SetMode(windowInfo, imeWindow, ImeMode.IMC_SETOPENSTATUS, Integer(open), focus?)
+                success := this.SetMode(windowInfo, imeWindow, ImeMode.IMC_SETOPENSTATUS, Integer(open), deadline, focus?, canWrite?)
         }
         conversion := this.ParseMode(MapGet(desiredState, "conversion", "preserve"))
         if (conversion != "") {
-            capability := this.Control(imeWindow, ImeMode.IMC_GETCONVERSIONMODE, 0)
+            capability := this.ControlBefore(imeWindow, ImeMode.IMC_GETCONVERSIONMODE, 0, deadline)
             if (capability["ok"] && capability["value"] != conversion) {
-                changed := this.SetMode(windowInfo, imeWindow, ImeMode.IMC_SETCONVERSIONMODE, conversion, focus?)
+                changed := this.SetMode(windowInfo, imeWindow, ImeMode.IMC_SETCONVERSIONMODE, conversion, deadline, focus?, canWrite?)
                 success := success && changed
             }
         }
         sentence := this.ParseMode(MapGet(desiredState, "sentence", "preserve"))
         if (sentence != "") {
-            capability := this.Control(imeWindow, ImeMode.IMC_GETSENTENCEMODE, 0)
+            capability := this.ControlBefore(imeWindow, ImeMode.IMC_GETSENTENCEMODE, 0, deadline)
             if (capability["ok"] && capability["value"] != sentence) {
-                changed := this.SetMode(windowInfo, imeWindow, ImeMode.IMC_SETSENTENCEMODE, sentence, focus?)
+                changed := this.SetMode(windowInfo, imeWindow, ImeMode.IMC_SETSENTENCEMODE, sentence, deadline, focus?, canWrite?)
                 success := success && changed
             }
         }
         return success
     }
 
-    SetMode(windowInfo, imeWindow, command, value, focus := unset) {
-        if IsSet(focus) && !this.Identity.IsForegroundFocus(windowInfo, focus)
+    SetMode(windowInfo, imeWindow, command, value, deadline, focus := unset, canWrite := unset) {
+        if IsSet(canWrite) ? !canWrite() : (IsSet(focus) && !this.Identity.IsForegroundFocus(windowInfo, focus))
             return false
-        return this.Control(imeWindow, command, value)["ok"]
+        return this.ControlBefore(imeWindow, command, value, deadline)["ok"]
+    }
+
+    ControlBefore(imeWindow, command, value, deadline) {
+        remaining := deadline - TickCount64()
+        return remaining > 0 ? this.Control(imeWindow, command, value, remaining) : Map("ok", false)
     }
 
     GetImeWindow(windowInfo, focus := unset) {
@@ -119,7 +135,6 @@ class ImeMode {
         result := 0
         if (timeoutMs = "")
             timeoutMs := this.Config.MessageTimeoutMs
-        DllCall("kernel32\SetLastError", "UInt", 0)
         ok := DllCall("user32\SendMessageTimeoutW",
             "Ptr", imeWindow,
             "UInt", ImeMode.WM_IME_CONTROL,
@@ -129,7 +144,7 @@ class ImeMode {
             "UInt", timeoutMs,
             "Ptr*", &result,
             "Ptr")
-        return Map("ok", !!ok, "value", result, "error", A_LastError)
+        return Map("ok", !!ok, "value", result)
     }
 
     ParseMode(value) {

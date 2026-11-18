@@ -54,6 +54,8 @@ RunSelfTests(baseDir) {
     changedState := Map("imeOpen", "0", "conversion", "0x1", "sentence", "0x8")
     AssertTest(noOpProbe.Apply(Map(), changedState) && noOpProbe.SetCalls = 1,
         "IME mode writes only changed fields", failures)
+    AssertTest(!noOpProbe.Apply(Map(), changedState,, (*) => false) && noOpProbe.SetCalls = 1,
+        "Cancelled restoration cannot update an IME mode", failures)
     AssertTest(ApplicationVersion() != "", "Application version discovery", failures)
     lockPath := A_Temp "\keypersona-lock-selftest-" DllCall("kernel32\GetCurrentProcessId", "UInt")
     AssertTest(AcquireRuntimeLock(lockPath) && !AcquireRuntimeLock(lockPath),
@@ -414,9 +416,11 @@ RunSelfTests(baseDir) {
     FileAppend("persistence-rules-ok`n", progressPath, "UTF-8")
 
     TestProfileSyncRetry(tempConfigDir, discoveredCatalog, testLogger, failures)
+    TestInputChangeKeys(failures)
     TestInputRestoration(testConfig, testLogger, failures)
     TestAppInputPolicy(testConfig, testLogger, failures)
-    identityApi := WindowIdentity(testConfig, testLogger)
+    TestKeyboardPoll(testConfig, testLogger, failures)
+    identityApi := WindowIdentity(testConfig)
     window := identityApi.Resolve()
     AssertTest(!identityApi.Resolve(A_ScriptHwnd).Count, "Window resolution ignores its own process", failures)
     desktop := DllCall("user32\GetShellWindow", "Ptr")
@@ -436,7 +440,7 @@ RunSelfTests(baseDir) {
         state := profileApi.Read(window)
         AssertTest(MapGet(state, "profile", "") != "", "Foreground profile read", failures)
         FileAppend("profile-read=" MapGet(state, "profile", "") "`n", progressPath, "UTF-8")
-        imeState := ImeMode(identityApi, testConfig, testLogger).Read(window, MapGet(state, "kind", "unknown"))
+        imeState := ImeMode(identityApi, testConfig).Read(window, MapGet(state, "kind", "unknown"))
         AssertTest(imeState.Has("imeOpen"), "IME mode read path", failures)
         FileAppend("ime-read=" MapGet(imeState, "imeOpen", "") "`n", progressPath, "UTF-8")
     } else {
@@ -569,6 +573,14 @@ TestInputProfilesAndMenu(profiles, config, failures) {
         && catalog[StrLower(legacyId)]["kind"] = "ime", "Discovery includes legacy IMEs and skips disabled TIPs", failures)
     profiles.SetCatalog(catalog)
     profiles.Manager := ""
+    usLayout := Map("kind", "keyboard", "hkl", "0x04090409")
+    AssertTest(profiles.CanVerifyKeyboardWithLayout(usLayout)
+        && !profiles.CanVerifyKeyboardWithLayout(Map("kind", "keyboard", "hkl", "0x04092000")),
+        "Only stable keyboard handles qualify for lightweight enforcement", failures)
+    profiles.ByLanguage["0409"].Push(profiles.ParseProfile("0409:" SubStr(tipId, 6)))
+    AssertTest(!profiles.CanVerifyKeyboardWithLayout(usLayout),
+        "A keyboard sharing its language with a TSF input source needs full reads", failures)
+    profiles.ByLanguage["0409"].Pop()
     AssertTest(profiles.ResolveProfileForLanguage(0x0804, 0xE0200804)["id"] = legacyId
         && !profiles.ResolveProfileForLanguage(0x0804, 0xE0210804).Count,
         "Legacy IMEs require a matching layout handle", failures)
@@ -619,6 +631,44 @@ TestInputProfilesAndMenu(profiles, config, failures) {
         "Legacy mode restoration writes only known differences", failures)
 }
 
+TestInputChangeKeys(failures) {
+    eventGui := Gui()
+    keys := InputChangeKeys(eventGui.Hwnd, (*) => 0)
+    try {
+        AssertTest(keys.SetEnabled(true) && keys.Registered, "Register native keyboard notifications", failures)
+        AssertTest(keys.SetEnabled(false) && !keys.Registered, "Unregister keyboard notifications", failures)
+    } finally {
+        keys.SetEnabled(false)
+        eventGui.Destroy()
+    }
+    keys.IsSwitchGesture(0x5B, false)
+    keys.IsSwitchGesture(0x20, false)
+    AssertTest(keys.IsSwitchGesture(0x20, true) && keys.IsSwitchGesture(0x5B, true),
+        "Win+Space schedules checks on release", failures)
+
+    keys.IsSwitchGesture(0x10, false)
+    keys.IsSwitchGesture(0x41, false)
+    keys.IsSwitchGesture(0x41, true)
+    AssertTest(!keys.IsSwitchGesture(0x10, true), "Typing with Shift does not trigger a check", failures)
+
+    keys.IsSwitchGesture(0x10, false)
+    AssertTest(keys.IsSwitchGesture(0x10, true), "Standalone Shift supplies an IME mode hint", failures)
+    keys.IsSwitchGesture(0x11, false)
+    keys.IsSwitchGesture(0x10, false)
+    AssertTest(keys.IsSwitchGesture(0x11, true) && !keys.IsSwitchGesture(0x10, true),
+        "Ctrl+Shift signals once on release", failures)
+
+    keys.IsSwitchGesture(0x12, false)
+    keys.IsSwitchGesture(0x10, false)
+    keys.IsSwitchGesture(0x54, false)
+    AssertTest(!keys.IsSwitchGesture(0x10, true), "An unrelated modifier shortcut does not trigger a check", failures)
+    keys.Reset()
+
+    keys.IsSwitchGesture(0x12, false)
+    keys.IsSwitchGesture(0x10, false)
+    AssertTest(keys.IsSwitchGesture(0x10, true), "Alt+Shift supplies a layout hint", failures)
+}
+
 TestInputRestoration(config, logger, failures) {
     Critical "On"
     try {
@@ -626,6 +676,20 @@ TestInputRestoration(config, logger, failures) {
         englishMode := StateClone(chinese)
         englishMode["imeOpen"] := "0"
         englishLayout := Map("profile", "0409:00000409", "kind", "keyboard", "source", "rule")
+
+        delayedFocus := StateClone(chinese)
+        delayedFocus["focused"] := false
+        app := InputRestorationProbe(config, logger, delayedFocus)
+        app.ApplyState(app.CurrentWindow, englishLayout, "default", true)
+        app.Restore.Pending.focusReadyUntil := TickCount64() - 1
+        app.Restore.Advance(true)
+        AssertTest(app.Restore.Pending && !app.LayoutRequests && !app.StateReads,
+            "Unfocused startup waits for a real focus notification after timed checks end", failures)
+        app.Actual := chinese
+        app.Restore.Advance(true)
+        AssertTest(app.LayoutRequests = 1 && app.LastWriteFocus = 101,
+            "The first ready focus receives the pending startup request", failures)
+        app.Restore.Cancel()
 
         app := InputRestorationProbe(config, logger, chinese)
         app.ApplyState(app.CurrentWindow, englishLayout, "default", true)
@@ -684,7 +748,42 @@ TestInputRestoration(config, logger, failures) {
         app.Actual["focusHwnd"] := 102
         app.Restore.Advance(true)
         AssertTest(!app.Restore.Pending && app.LayoutRequests = 1 && !app.ModeWrites,
-            "Verification after a write does not send it again to another control", failures)
+            "Restoration does not follow a change between editing controls", failures)
+
+        hostChinese := StateClone(chinese)
+        hostChinese["focusHwnd"] := 100
+        app := InputRestorationProbe(config, logger, hostChinese)
+        app.ApplyState(app.CurrentWindow, englishLayout, "default", true)
+        app.Actual := StateClone(englishLayout)
+        app.Actual["focusHwnd"] := 100
+        app.Restore.Advance()
+        AssertTest(app.Restore.Pending && app.LayoutRequests = 1,
+            "A verified host waits for an editing control during activation", failures)
+        app.Actual := StateClone(chinese)
+        app.Actual["focusThreadId"] := 2
+        app.Restore.Advance(true)
+        AssertTest(app.Restore.Pending && app.LayoutRequests = 2 && app.LastWriteFocus = 101,
+            "A late editing control in the same window gets one new restore request", failures)
+        app.Actual["focusHwnd"] := 102
+        app.Restore.Advance(true)
+        AssertTest(!app.Restore.Pending && app.LayoutRequests = 2 && !app.Saved.Count,
+            "After the host handoff restoration does not follow further focus changes", failures)
+
+        app := InputRestorationProbe(config, logger, hostChinese)
+        app.ApplyState(app.CurrentWindow, englishLayout, "default", true)
+        app.Actual := StateClone(englishLayout)
+        app.Actual["focusHwnd"] := 101
+        app.Restore.Advance(true)
+        AssertTest(!app.Restore.Pending && app.LayoutRequests = 1,
+            "An already-correct late focus is never written again", failures)
+
+        app := InputRestorationProbe(config, logger, hostChinese)
+        app.ApplyState(app.CurrentWindow, englishLayout, "default", true)
+        app.Restore.Pending.focusUntil := TickCount64() - 1
+        app.Actual := StateClone(chinese)
+        app.Restore.Advance(true)
+        AssertTest(!app.Restore.Pending && app.LayoutRequests = 1,
+            "A control that focuses after activation is left alone", failures)
 
         host := StateClone(englishLayout)
         host["focusHwnd"] := 100
@@ -692,7 +791,13 @@ TestInputRestoration(config, logger, failures) {
         app.ApplyState(app.CurrentWindow, englishLayout, "default", true)
         AssertTest(app.Restore.Pending && !app.LayoutRequests,
             "Matching host can await an incoming search-field focus", failures)
-        app.Actual := chinese
+        app.Actual := StateClone(chinese)
+        app.Actual["focusHwnd"] := 100
+        app.Restore.Pending.settleUntil := TickCount64() - 1
+        app.Restore.Advance()
+        AssertTest(app.Restore.Pending && !app.LayoutRequests,
+            "A changed host waits for late child focus without sending a switch", failures)
+        app.Actual["focusHwnd"] := 101
         app.Restore.Advance(true)
         AssertTest(app.LayoutRequests = 1 && app.LastWriteFocus = 101,
             "Search-field focus advances the pending restore to the actual control", failures)
@@ -724,7 +829,32 @@ TestInputRestoration(config, logger, failures) {
         app.ExpireRestoreCheck()
         AssertTest(!app.Restore.Pending && app.LayoutRequests = 1
             && app.ObservationState["profile"] = "0411:00000411" && !app.Saved.Count,
-            "Unexpected input source ends restoration and does not get overwritten", failures)
+            "An unexpected input source without a gesture ends restoration and is not learned", failures)
+
+        app := InputRestorationProbe(config, logger, chinese)
+        app.ApplyState(app.CurrentWindow, target, "restore", true)
+        app.Restore.NoteInputGesture(app.CurrentWindow)
+        app.Restore.Advance()
+        AssertTest(app.Restore.Pending && app.LayoutRequests = 1 && !app.Saved.Count,
+            "A shortcut hint waits for a change without posting another request", failures)
+        app.Actual := Map("profile", "0411:00000411", "kind", "keyboard", "focusHwnd", 101)
+        app.Restore.Advance()
+        AssertTest(!app.Restore.Pending && !app.Saved.Count && app.CandidateSignature != "",
+            "A different input source after a shortcut enters normal confirmation", failures)
+        app.CandidateSince := TickCount64() - 60
+        app.ConfirmObservation()
+        AssertTest(MapGet(app.Saved, "profile", "") = "0411:00000411" && app.LayoutRequests = 1,
+            "A confirmed manual selection during restoration is learned without another switch", failures)
+
+        app := InputRestorationProbe(config, logger, chinese)
+        app.ApplyState(app.CurrentWindow, target, "restore", true)
+        app.Restore.NoteInputGesture(app.CurrentWindow)
+        app.Actual := StateClone(englishLayout)
+        app.Actual["focusHwnd"] := 101
+        app.Restore.Pending.gesture.until := TickCount64() - 1
+        app.Restore.Advance()
+        AssertTest(!app.Restore.Pending && !app.Saved.Count && app.CandidateSignature = "",
+            "An automatic request reaching its target after a shortcut is not learned", failures)
     } finally {
         Critical "Off"
     }
@@ -841,16 +971,50 @@ TestAppInputPolicy(config, logger, failures) {
     }
 }
 
+TestKeyboardPoll(config, logger, failures) {
+    threadId := DllCall("kernel32\GetCurrentThreadId", "UInt")
+    hkl := InputProfiles.GetThreadLayout(threadId)
+    actual := Map("profile", "0409:00000409", "kind", "keyboard", "hkl", "0x" Hex(hkl),
+        "focusHwnd", 101, "focusThreadId", threadId)
+    app := InputRestorationProbe(config, logger, actual)
+    app.Enforcement.SetTarget("probe.exe", actual)
+    app.ObserveCurrentWindow(true)
+    app.ObserveCurrentWindow(true)
+    AssertTest(app.StateReads = 1 && app.VerifiedKeyboard && !app.LayoutRequests,
+        "Stable enforced keyboard skips full reads on timer ticks", failures)
+
+    app.ObserveCurrentWindow()
+    app.Revision += 1
+    app.ObserveCurrentWindow(true)
+    app.Actual["focusHwnd"] := 102
+    app.ObserveCurrentWindow(true)
+    app.VerifiedKeyboard.hkl := 0
+    app.ObserveCurrentWindow(true)
+    AssertTest(app.StateReads = 5 && !app.LayoutRequests,
+        "Input events and layout, focus or catalog changes use full reads", failures)
+
+    app.Enforcement.SetTarget("probe.exe", Map())
+    app.ObserveCurrentWindow(true)
+    app.ObserveCurrentWindow(true)
+    AssertTest(app.StateReads = 6 && app.VerifiedKeyboard && app.ObservationState.Count && !app.LayoutRequests,
+        "The lightweight timer path also applies to automatic memory", failures)
+
+    app.CandidateSignature := "pending-change"
+    app.ObserveCurrentWindow(true)
+    AssertTest(app.StateReads = 7, "An unconfirmed observation still triggers a full read", failures)
+}
+
 class ImeModeNoOpProbe extends ImeMode {
     __New() {
         this.SetCalls := 0
+        this.Config := {MessageTimeoutMs: 120}
     }
 
     GetImeWindow(windowInfo, focus := unset) {
         return 1
     }
 
-    Control(imeWindow, command, value) {
+    Control(imeWindow, command, value, timeoutMs := 0) {
         if (command = ImeMode.IMC_SETOPENSTATUS
             || command = ImeMode.IMC_SETCONVERSIONMODE
             || command = ImeMode.IMC_SETSENTENCEMODE) {
@@ -870,10 +1034,12 @@ class InputRestorationProbe extends KeyPersonaApp {
         this.Logger := logger
         this.ShuttingDown := false
         this.ObserveOnly := false
+        this.PollPeriod := config.IdlePollMs
         this.Actual := actual
         this.CurrentWindow := Map("hwnd", 100, "exe", "probe.exe")
         this.SessionStates := Map()
         this.ObservationState := Map()
+        this.VerifiedKeyboard := 0
         this.CandidateSignature := ""
         this.Restore := InputRestorationClockProbe(this)
         this.Enforcement := InputEnforcement()
@@ -882,6 +1048,8 @@ class InputRestorationProbe extends KeyPersonaApp {
         this.LastWriteFocus := 0
         this.Saved := Map()
         this.StoreReads := 0
+        this.StateReads := 0
+        this.Revision := 1
         this.Tray := this
         this.Store := this
         this.Profiles := this
@@ -890,13 +1058,19 @@ class InputRestorationProbe extends KeyPersonaApp {
     }
 
     GetForegroundFocus(windowInfo) {
-        return Map("hwnd", this.Actual["focusHwnd"], "threadId", 1, "focused", true)
+        return Map("hwnd", this.Actual["focusHwnd"], "threadId", MapGet(this.Actual, "focusThreadId", 1),
+            "focused", MapGet(this.Actual, "focused", true))
     }
 
-    ReadState(windowInfo, focus := unset, enforcedTarget := unset) {
+    ReadState(windowInfo, focus := unset, enforcedTarget := unset, desiredState := unset) {
+        this.StateReads += 1
         if IsSet(focus) && focus["hwnd"] != this.Actual["focusHwnd"]
             return Map()
         return StateClone(this.Actual)
+    }
+
+    CanVerifyKeyboardWithLayout(actual) {
+        return actual["kind"] = "keyboard"
     }
 
     MatchRule(windowInfo) {
@@ -908,22 +1082,20 @@ class InputRestorationProbe extends KeyPersonaApp {
         return StateClone(this.Saved)
     }
 
-    Switch(windowInfo, desired, focus) {
+    Switch(windowInfo, desired, focus, canWrite) {
         this.LayoutRequests += 1
         this.LastWriteFocus := focus["hwnd"]
         return true
     }
 
-    Apply(windowInfo, desired, focus) {
+    Apply(windowInfo, desired, focus, canWrite) {
         this.ModeWrites += 1
         return true
     }
 
     Upsert(windowInfo, state, source) {
         this.Saved := StateClone(state)
-    }
-
-    Refresh(*) {
+        return true
     }
 
     ScheduleFlush() {

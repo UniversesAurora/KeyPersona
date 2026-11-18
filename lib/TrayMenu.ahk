@@ -3,11 +3,8 @@
 class TrayMenuController {
     __New(app) {
         this.App := app
-        this.LastFingerprint := ""
-        this.StateMenu := ""
-        this.DefaultMenu := ""
+        this.PunctuationKey := ""
         this.PunctuationMenu := ""
-        this.AppInputMenu := ""
         this.About := AboutDialog()
         this.LastLeftClick := 0
         this.TrayMessageCallback := ObjBindMethod(this, "OnTrayMessage")
@@ -16,26 +13,13 @@ class TrayMenuController {
         A_IconTip := AppInfo.Name
     }
 
-    Refresh(force := false) {
-        window := this.App.CurrentWindow
-        state := this.App.CurrentState
-        rule := this.App.CurrentRule
-        if (window.Count && !DllCall("user32\IsWindow", "Ptr", MapGet(window, "hwnd", 0), "Int")) {
-            window := Map()
-            state := Map()
-            rule := Map()
-        }
-        exe := MapGet(window, "exe", "")
-        excluded := this.App.Config.IsAppMemoryExcluded(exe)
+    Build(context) {
+        window := context.window
+        rule := context.rule
+        desired := context.desired
+        exe := WindowIdentity.AppSelectorFor(window)
+        appName := WindowIdentity.AppLabel(window)
         forced := this.App.Config.IsAppInputForced(exe)
-        fingerprint := this.App.Enabled "|" MapGet(window, "hwnd", 0) "|"
-            . StateSignature(state) "|" MapGet(rule, "name", "") "|"
-            . this.App.CurrentSource "|" this.App.Config.DefaultState "|"
-            . this.App.Config.AutoMemory "|" this.App.Config.PunctuationRevision "|"
-            . excluded "|" forced "|" StateSignature(this.App.Enforcement.Target)
-        if !force && fingerprint = this.LastFingerprint
-            return
-        this.LastFingerprint := fingerprint
         tray := A_TrayMenu
         tray.Delete()
         tray.Add("自动切换（全局）", ObjBindMethod(this.App, "ToggleEnabled"))
@@ -53,18 +37,16 @@ class TrayMenuController {
             tray.Check(adminLabel)
         tray.Add()
         if window.Count {
-            status := StrReplace("当前窗口：" MapGet(window, "exe", "未知") " · " this.ShortState(state), "&", "&&")
-            tray.Add(status, (*) => 0)
-            tray.Disable(status)
-            identityType := MapGet(window, "mode", "app") = "window" ? "窗口" : "应用"
-            identityId := Fnv1a32(MapGet(window, "identityKey", ""))
-            sourceStatus := "来源：" this.SourceLabel(this.App.CurrentSource, rule, window)
-                . " · " identityType " ID " identityId
-            tray.Add(sourceStatus, (*) => 0)
-            tray.Disable(sourceStatus)
+            state := context.actual
+            status := "当前：" appName " · " this.ShortState(state)
+                . (context.cached ? "（最近检测）" : "")
+            this.AddStatus(tray, status)
+            target := !this.App.CanSwitch(window) ? "自动切换已停用" : desired.Count
+                ? this.ShortState(desired) "（" this.SourceLabel(MapGet(desired, "source", ""), rule) "）"
+                : "跟随 Windows"
+            this.AddStatus(tray, "进入时：" target)
         } else {
-            tray.Add("当前窗口：无可管理窗口", (*) => 0)
-            tray.Disable("当前窗口：无可管理窗口")
+            this.AddStatus(tray, context.waiting ? "当前窗口：正在等待就绪" : "当前窗口：无可管理窗口")
         }
         defaultState := this.App.Config.GetNamedState(this.App.Config.DefaultState)
         defaultStatus := "全局默认："
@@ -108,10 +90,13 @@ class TrayMenuController {
             tray.Add(appLabel, (*) => 0)
             tray.Disable(appLabel)
         } else {
-            this.AppInputMenu := this.BuildAppInputMenu(exe, excluded, forced)
-            tray.Add(appLabel, this.AppInputMenu)
+            tray.Add(appLabel, this.BuildAppInputMenu(window, exe, forced, desired))
         }
-        this.PunctuationMenu := this.BuildPunctuationMenu(window)
+        punctuationKey := exe "|" this.App.Config.PunctuationRevision
+        if punctuationKey != this.PunctuationKey {
+            this.PunctuationMenu := this.BuildPunctuationMenu(window)
+            this.PunctuationKey := punctuationKey
+        }
         tray.Add("中文符号转英文", this.PunctuationMenu)
         tray.Add()
         memoryMenu := Menu()
@@ -391,10 +376,19 @@ class TrayMenuController {
     }
 
     ShowMenu(*) {
-        this.App.RefreshInputProfiles()
-        this.App.RefreshCurrentStateForMenu()
-        this.Refresh(true)
-        A_TrayMenu.Show()
+        try {
+            context := this.App.CaptureMenuContext()
+            if context.waiting && TickCount64() - this.LastLeftClick < 350 {
+                SetTimer(this.ShowMenuCallback, -30)
+                return
+            }
+            this.App.RefreshInputProfiles()
+            this.Build(this.App.ResolveMenuPolicy(context))
+            A_TrayMenu.Show()
+        } catch Error as failure {
+            this.App.Logger.Error("Could not display tray menu: " failure.Message)
+            TrayTip("无法打开托盘菜单。", AppInfo.Name, "Iconx")
+        }
     }
 
     ShowAbout(*) {
