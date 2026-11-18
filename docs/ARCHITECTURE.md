@@ -22,23 +22,20 @@ PowerShell 7 只负责执行 `build.ps1`，不是程序运行时的一部分。
 2. 读取或创建 `config.ini`。
 3. 枚举当前用户启用的输入 profile，并对账命名状态、规则和自动记忆。
 4. 读取 `state.ini`；文件损坏时尝试读取 `state.ini.bak`。
-5. 安装 `SetWinEventHook(EVENT_SYSTEM_FOREGROUND)` 并启动托盘菜单；自动记忆开启时再启动输入法状态采样。
+5. 分别订阅 `EVENT_SYSTEM_FOREGROUND` 和 `EVENT_OBJECT_FOCUS`，然后启动托盘菜单。
 6. 前台窗口变化时选择目标状态；实际状态已经符合目标时不发送切换消息。
 
 核心恢复路径是：
 
 ```text
 EVENT_SYSTEM_FOREGROUND
-  → WinEvent 回调投递内部消息
-  → 等待 foregroundSettleMs（默认 80 ms）
-  → 再次确认前台窗口
-  → 解析顶层宿主和焦点控件
-  → 按自动记忆、用户规则、全局默认选择目标状态
-  → 比较实际状态
-  → 仅在不一致时切换并回读验证
+  → 确认实际前台窗口，解析宿主并选择目标状态
+  → 通过 EVENT_OBJECT_FOCUS 或一次性定时检查确认输入焦点
+  → 读取当前输入源和内部模式
+  → 有差异时只切换对应层，回读确认后结束
 ```
 
-WinEvent 回调不直接读写文件或切换输入法，避免回调重入和事件乱序。跨进程消息使用 `SendMessageTimeout`，目标窗口无响应时跳过，不让 KeyPersona 一直卡住。
+WinEvent 回调把消息交给应用线程。应用合并待处理的事件，以当时的前台窗口核对归属。稳定期间复用窗口信息。跨进程的 IME 模式读取使用 `SendMessageTimeout`，一次快照的多个查询共享同一个超时预算。
 
 ## 3. 输入法状态模型
 
@@ -108,21 +105,23 @@ KeyPersona 在以下时机重新枚举当前用户启用的输入法：
 - 打开托盘菜单时。
 - 观察到目录中不存在的活动 profile 时；重复刷新带冷却时间。
 
-发现来源包括当前用户语言 profile 注册表和 TSF TIP 注册信息。程序只读取这些信息，不修改 Windows 的语言列表。
+使用 Windows 的 [EnumEnabledLayoutOrTip](https://learn.microsoft.com/windows/win32/tsf/enumenabledlayoutortip) 枚举当前用户的键盘布局和 TSF 输入法，筛掉禁用项，并通过当前用户的 `Keyboard Layout\Preload` 和 `Substitutes` 补充旧式 IME。Google Mozc 也使用这个接口读取 Windows 输入源。[Mozc 实现](https://github.com/google/mozc/blob/master/src/win32/base/uninstall_helper.cc)
+
+输入法名称优先读取系统注册的本地化字符串，用 [SHLoadIndirectString](https://learn.microsoft.com/windows/win32/api/shlwapi/nf-shlwapi-shloadindirectstring) 解析资源引用。没有本地化名称时，TSF 输入法读取 [GetLanguageProfileDescription](https://learn.microsoft.com/windows/win32/api/msctf/nf-msctf-itfinputprocessorprofiles-getlanguageprofiledescription) 或注册描述，普通键盘布局和旧式 IME 读取布局描述。托盘按输入源的语言 ID 分栏，通过 Windows NLS 读取列标题。规则和记忆使用输入源标识。
 
 自动发现遵循以下规则：
 
-- 中文 TIP 生成中文、英文两个命名状态；其他键盘布局生成一个状态。
+- 中文 IME 生成中文、英文两个模式；日语 IME 生成开启、直接输入两个模式。每个输入源也有一个保留内部模式的状态，便于在不支持模式读写的输入框中使用。
 - 唯一键是完整 profile ID 加规范化后的 `imeOpen`。
 - 已存在同一实际状态时不重复创建。
 - 用户手写状态优先于 `generated=1` 的自动状态；重复项删除后，规则会改指向保留项。
 - profile 已不可用时，删除对应的命名状态、用户规则和自动记忆。
 - 全局默认失效时，依次选择有效中文状态、English US、任一有效状态。
-- 只有枚举成功且结果非空时才执行删除，避免临时读取失败误删配置。
+- 只有 Windows 完成枚举且结果非空时才执行删除。枚举失败时沿用缓存，初次启动时回退到用户语言配置和预加载项。
 
 ### 5.2 读取
 
-KeyPersona 先用 `GetKeyboardLayout` 读取前台线程的语言层，再尽量解析活动 TSF profile。HKL 不能独自区分同一语言下的多个 TSF 输入法，因此持久状态优先保存完整 profile ID。
+KeyPersona 用 `GetKeyboardLayout` 读取前台焦点线程的 HKL。旧式 IME 按准确的布局句柄匹配；TSF 输入法结合活动 profile、语言和替代布局判断。无法区分同一语言下的多个 TSF 输入法时将读数标为未知。持久化保存 TSF 完整标识或 `LANGID:KLID`。
 
 对微信输入法和兼容 IME，内部模式通过 `ImmGetDefaultIMEWnd` 和 `WM_IME_CONTROL` 读取。在已验证的 Windows Terminal 场景中，`ImmGetContext` 可能返回空，而 default IME window 仍能读写 open status，因此实现不能只依赖 `ImmGetContext`。
 
@@ -130,40 +129,40 @@ KeyPersona 先用 `GetKeyboardLayout` 读取前台线程的语言层，再尽量
 
 恢复分两层：
 
-1. 键盘布局使用 `LoadKeyboardLayout` 和 `WM_INPUTLANGCHANGEREQUEST`；TSF TIP 使用 `ITfInputProcessorProfileMgr::ActivateProfile` 激活完整 profile。
-2. profile 已正确激活后，再对支持的 IME 使用 `IMC_SETOPENSTATUS`；conversion 和 sentence 只有在目标状态要求写入时才处理。
+1. 键盘布局优先使用 `GetKeyboardLayoutList` 中可明确匹配的句柄，再使用 `LoadKeyboardLayout`。TSF TIP 先请求激活指定 profile。布局请求通过 `WM_INPUTLANGCHANGEREQUEST` 投递给当前焦点窗口，并等待回读确认。
+2. 确认是目标 profile 后，再处理已有可靠读数的 IME 模式字段，例如 `IMC_SETOPENSTATUS`。conversion 和 sentence 由目标状态决定是否写入。
 
 每一层都会先比较当前值。已经符合目标时不重复写入，也不会弹窗、抢焦点或模拟文本输入。
 
 ## 6. 前台事件和低频采样
 
-前台窗口变化主要依靠 `SetWinEventHook(EVENT_SYSTEM_FOREGROUND)`，不是高频轮询。
+`EVENT_SYSTEM_FOREGROUND` 确定使用哪个窗口的记忆和规则。独立的 `EVENT_OBJECT_FOCUS` 订阅补充宿主窗口激活后才出现的控件焦点，回读时仍以 Windows 当下的实际焦点句柄和线程为准。
 
 Windows 没有一个文档化广播能同时覆盖 Win+Space、语言栏点击、第三方输入法内部快捷键和所有 TSF 应用。自动记忆开启时，KeyPersona 因此保留一个低频 `SetTimer`：
 
 - 前台窗口刚变化后的 burst 阶段默认每 250 ms 采样一次，持续 2 秒。
 - 稳定后默认每 1000 ms 采样一次。
-- 关闭自动记忆或关闭整个自动切换功能时停止定时器。
-- 没有可识别的前台窗口时，定时器仍按当前周期触发，但本轮立即返回，不读写状态。
+- 强制保持有可用目标时，仅当前台是该应用才采用 `forcePollMs`，默认 100 ms。未选择自动记忆或强制保持时停止采样。关闭整个自动切换功能后所有采样停止。
+- 任务栏等忽略窗口处于前台时暂停状态采样，返回应用后继续。Windows 暂时没有前台窗口时只用低频定时检查窗口是否恢复。
 
-自动记忆关闭后不读取或写入会话记忆和 `state.ini`。前台窗口变化仍由 WinEvent 驱动，匹配的用户规则只在进入窗口时执行一次；没有规则的窗口保持当前输入法。
+全局或应用的自动记忆关闭时，目标选择和采样跳过该窗口的学习记录。前台窗口变化仍由 WinEvent 驱动，匹配的用户规则负责给出初始目标。强制保持启用时，同一个规则也可以作为持续保持的目标。
 
-当前实现没有单独监听 Windows 会话锁定事件。锁屏或安全桌面没有可识别窗口时不会学习状态；自动记忆开启时，采样定时器本身不会因为 session lock 被显式关闭。
+锁屏和安全桌面期间只处理可确认的前台输入目标。会话锁定未单独订阅。
 
-同一快照连续观察两次才学习。只有窗口仍在前台时才读取输入法；切到其他窗口后不再重新读取旧窗口，避免把新窗口的 TSF profile 记到旧窗口。快照包含 profile、`imeOpen`、conversion 和 sentence。
+一次读数共用同一个焦点目标。若读完后发现焦点或键盘布局已变，此次读数作废。焦点变化后的首次可靠读数用来建立基线。发现同一焦点内的状态变化后，约 60 毫秒后再确认一次。这样检测到变化后即可快速确认，同时保留低频常态采样。暂时读不到的内部模式保留上一次已知读数。
 
 ## 7. 避免把自动恢复当成用户操作
 
-每次主动恢复都会记录目标状态、递增 `applyGeneration`，并为当前 HWND 设置 `suppressLearningUntil`。抑制期内不学习程序自己造成的瞬态变化。
+`InputRestoration.ahk` 管理一次进入窗口的恢复。发出切换前可以根据后续焦点事件确认目标控件。没有合适的焦点事件时，通过 `foregroundSettleMs`（默认 80 毫秒）触发检查。初次读到宿主窗口已匹配时，允许在这段时间内等搜索框之类的控件接管焦点。发出请求后，后续写入绑定同一个焦点窗口和线程。
 
-恢复完成后会异步回读：
+恢复过程通过回读确认结果。
 
-- 实际状态与目标一致：记为恢复成功，不写新的学习记录。
-- 第一次不一致：最多补偿一次。
-- 仍不一致：写日志并停止重试。
-- 当前 profile 无法识别：不切换、不学习，等待后续重新发现或用户处理。
+- 离开窗口、禁用自动切换或发起新恢复时，取消程序等待执行的后续动作。匹配的状态跳过写入，恢复完成后的控件焦点变化只用于观察。
+- 以确认后的实际状态建立观察基线，恢复过程中暂停学习。恢复失败时也只更新这次观察的基线，原有的会话记忆和磁盘记录继续保留。
+- 恢复已有记忆时，目标仍在前台且实际状态没有出现其他变化，允许补偿一次。只有内部模式不符时只补偿内部模式。`applySuppressMs` 限制补偿的时间，恢复结束后即可继续采样。
+- 当前 profile 无法识别时跳过切换和学习。同一语言有多个候选且无法确认当前输入源时，按未知状态处理。
 
-用户规则和全局默认属于一次性的初始选择，不进入持续强制逻辑。规则应用后的验证不会补偿重试；用户随后手动切换时，程序不会再把状态拉回规则值。自动记忆开启时，稳定后的手动状态会写入会话记忆和 `state.ini`，以后优先于规则。
+普通用户规则和全局默认只在进入窗口时提供初始目标。强制保持由应用单独开启，复用同一套前台、焦点和回读校验。已知实际状态偏离目标时发起恢复，并跳过这次变化的自动学习。连续失败时逐渐拉长恢复间隔，成功确认后重新开始计数。
 
 ## 8. 规则、记忆和优先级
 
@@ -175,7 +174,9 @@ Windows 没有一个文档化广播能同时覆盖 Win+Space、语言栏点击�
 4. 匹配的 `[rule.*]` 应用用户规则；多条匹配时取最高 `priority`。
 5. 全局默认状态。
 
-自动记忆关闭时只检查第 3、4 项；没有匹配规则就不切换。这样可以把 KeyPersona 当作“按应用给一个进入时默认值”的工具，同时保留窗口内自由切换。
+全局或应用的自动记忆关闭时只检查第 3、4 项。没有匹配规则时，该窗口没有自动切换或强制保持目标。已有记忆在重新开启后可继续使用。
+
+`[input-app.*]` 按 exe 名称匹配，支持 `autoMemory=0`（关闭该应用的自动记忆）和 `force=1`（强制保持选定目标）。强制目标在进入窗口时从上述优先级取出，保持完整输入源和已知的中英文开闭模式。强制模式下保留 IME 的其他转换和句子标志。只有当前 profile 与目标相同且需要验证开闭模式时才查询 IME。快照中的未知字段不触发写入。
 
 当前窗口用户规则通过托盘创建，保存在 `config.ini`。它绑定当前窗口的持久 `identityKey`，不是 HWND：对 `app` 模式应用，它会覆盖同一 exe；对 `window` 模式应用，它会绑定 `exe + class + 标准化标题`。规则表示没有记忆时的默认值，不是输入法锁。
 
@@ -196,6 +197,7 @@ Windows 没有一个文档化广播能同时覆盖 Win+Space、语言栏点击�
 `config.ini` 由用户维护，保存：
 
 - 全局开关、自动记忆开关、默认状态、采样和超时参数。
+- 按应用匹配的自动记忆和强制保持设置。
 - identity mode 列表和忽略规则。
 - 命名输入法状态，包括自动生成项。
 - `[rule.*]` 应用规则。
@@ -270,6 +272,7 @@ KeyPersona/
 ├─ LICENSE
 ├─ AGENTS.md
 ├─ assets/
+│  ├─ GitHub-Invertocat.ico
 │  ├─ KeyPersona.ico
 │  └─ KeyPersona-icon.png
 ├─ docs/
@@ -279,7 +282,8 @@ KeyPersona/
 │     ├─ v1.0.0.md
 │     ├─ v1.1.0.md
 │     ├─ v1.1.1.md
-│     └─ v1.2.0.md
+│     ├─ v1.2.0.md
+│     └─ v1.3.0.md
 ├─ lib/
 │  ├─ AppInfo.ahk
 │  ├─ LegacyMigration.ahk
@@ -288,6 +292,8 @@ KeyPersona/
 │  ├─ WindowIdentity.ahk
 │  ├─ WinEventHook.ahk
 │  ├─ InputProfiles.ahk
+│  ├─ InputRestoration.ahk
+│  ├─ InputEnforcement.ahk
 │  ├─ ImeMode.ahk
 │  ├─ Rules.ahk
 │  ├─ StateStore.ahk
