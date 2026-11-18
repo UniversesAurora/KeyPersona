@@ -284,7 +284,7 @@ class KeyPersonaConfig {
                 continue
             identityKey := IniUnescape(MapGet(values, "identityKey", ""))
             stateName := MapGet(values, "state", "")
-            if (identityKey = "" || !this.NamedStates.Has(stateName))
+            if (identityKey = "" || (stateName != "@global" && !this.NamedStates.Has(stateName)))
                 continue
             rules[identityKey] := Map(
                 "name", match[1],
@@ -315,6 +315,11 @@ class KeyPersonaConfig {
         return this.AutoMemory
     }
 
+    SetAutoSwitch(enabled) {
+        this.WriteChanges([["general", "enabled", enabled ? "1" : "0"]])
+        this.Enabled := !!enabled
+    }
+
     SetRunAsAdmin(enabled) {
         this.WriteChanges([["general", "runAsAdmin", enabled ? "1" : "0"]])
         this.RunAsAdmin := !!enabled
@@ -328,39 +333,60 @@ class KeyPersonaConfig {
             exe := StrLower(Trim(MapGet(values, "exe", "")))
             if (exe != "")
                 policies[exe] := Map("section", section,
-                    "excludeMemory", !ParseBool(MapGet(values, "autoMemory", "1"), true),
-                    "force", ParseBool(MapGet(values, "force", "0")))
+                    "autoMemory", KeyPersonaConfig.OverrideValue(MapGet(values, "autoMemory", "inherit")),
+                    "autoSwitch", KeyPersonaConfig.OverrideValue(MapGet(values, "autoSwitch", "inherit")),
+                    "force", KeyPersonaConfig.OverrideValue(MapGet(values, "force", "inherit")))
         }
         return policies
     }
 
-    IsAppMemoryExcluded(exe) {
-        exe := StrLower(exe)
-        return this.AppInputPolicies.Has(exe) && this.AppInputPolicies[exe]["excludeMemory"]
+    static OverrideValue(value) {
+        enabled := ParseBool(value, -1)
+        return enabled = -1 ? "inherit" : enabled ? "1" : "0"
+    }
+
+    GetAppInputOption(exe, option) {
+        return MapGet(MapGet(this.AppInputPolicies, StrLower(exe), Map()), option, "inherit")
+    }
+
+    GetInheritedAppInputOption(exe, option) {
+        base := this.BaseAppSelector(exe)
+        if base != "" && base != exe {
+            mode := this.GetAppInputOption(base, option)
+            if mode != "inherit"
+                return mode = "1"
+        }
+        return option = "autoMemory" ? this.AutoMemory : option = "autoSwitch" && this.Enabled
+    }
+
+    ResolveAppInputOption(exe, option) {
+        mode := this.GetAppInputOption(exe, option)
+        if mode != "inherit"
+            return mode = "1"
+        return this.GetInheritedAppInputOption(exe, option)
     }
 
     IsAppInputForced(exe) {
-        exe := StrLower(exe)
-        return this.AppInputPolicies.Has(exe) && this.AppInputPolicies[exe]["force"]
+        return this.ResolveAppInputOption(exe, "force")
     }
 
-    SetAppInputOption(exe, option, enabled) {
+    SetAppInputOption(exe, option, mode) {
         exe := StrLower(Trim(exe))
-        if (exe = "" || (option != "excludeMemory" && option != "force"))
+        if (exe = "" || (option != "autoMemory" && option != "autoSwitch" && option != "force")
+            || (mode != "inherit" && mode != "0" && mode != "1"))
             return false
-        key := option = "excludeMemory" ? "autoMemory" : "force"
         policy := MapGet(this.AppInputPolicies, exe, Map())
         section := MapGet(policy, "section", "input-app." Fnv1a32(exe))
-        if enabled {
-            if !policy.Count
-                IniWrite(exe, this.Path, section, "exe")
-            IniWrite(key = "autoMemory" ? "0" : "1", this.Path, section, key)
+        if (mode != "inherit") {
+            changes := KeyPersonaConfig.AppSelectorFields(section, exe)
+            changes.Push([section, option, mode])
+            this.WriteChanges(changes)
         } else if policy.Count {
             values := this.Doc.Sections[section]
-            if (values.Count = 2 && values.Has(key))
-                IniDelete(this.Path, section)
+            if (values.Count = KeyPersonaConfig.AppSelectorFields(section, exe).Length + 1 && values.Has(option))
+                this.WriteChanges([[section]])
             else
-                IniDelete(this.Path, section, key)
+                this.WriteChanges([[section, option]])
         }
         this.Doc := IniDocument.Load(this.Path)
         this.AppInputPolicies := this.LoadAppInputPolicies()
@@ -476,13 +502,13 @@ class KeyPersonaConfig {
         this.Reload()
     }
 
-    GetWindowRule(windowInfo) {
-        identityKey := MapGet(windowInfo, "identityKey", "")
+    GetWindowRule(windowInfo, inherited := false) {
+        identityKey := MapGet(windowInfo, inherited ? "legacyIdentityKey" : "identityKey", "")
         if (identityKey = "" || !this.WindowRules.Has(identityKey))
             return Map()
         stored := this.WindowRules[identityKey]
         stateName := stored["stateName"]
-        state := this.GetNamedState(stateName)
+        state := this.GetNamedState(stateName = "@global" ? this.DefaultState : stateName)
         if !state.Count
             return Map()
         return Map(
@@ -495,7 +521,7 @@ class KeyPersonaConfig {
 
     SetWindowRule(windowInfo, stateName) {
         identityKey := MapGet(windowInfo, "identityKey", "")
-        if (identityKey = "" || !this.NamedStates.Has(stateName))
+        if (identityKey = "" || (stateName != "@global" && !this.NamedStates.Has(stateName)))
             return false
         existing := MapGet(this.WindowRules, identityKey, Map())
         section := MapGet(existing, "section", "window-rule." Fnv1a32(identityKey))
@@ -517,22 +543,6 @@ class KeyPersonaConfig {
         this.WriteChanges([[section]])
         this.Reload()
         return !this.WindowRules.Has(identityKey)
-    }
-
-    RemoveApplicationRule(name) {
-        wanted := StrLower("rule." name)
-        sectionName := ""
-        for section in this.Doc.Sections {
-            if (StrLower(section) = wanted) {
-                sectionName := section
-                break
-            }
-        }
-        if (sectionName = "")
-            return false
-        IniDelete(this.Path, sectionName)
-        this.Reload()
-        return true
     }
 
     EnsureDefaultFile() {

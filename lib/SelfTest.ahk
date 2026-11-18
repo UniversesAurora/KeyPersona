@@ -241,19 +241,31 @@ RunSelfTests(baseDir) {
     reloadedConfig := KeyPersonaConfig(tempConfigDir)
     AssertTest(reloadedConfig.DefaultState = "english-us", "Default state reload", failures)
     AssertTest(!reloadedConfig.AutoMemory, "Automatic memory setting reload", failures)
-    AssertTest(reloadedConfig.SetAppInputOption("Code.exe", "excludeMemory", true)
-        && reloadedConfig.SetAppInputOption("CODE.EXE", "force", true),
+    AssertTest(reloadedConfig.SetAppInputOption("Code.exe", "autoMemory", "0")
+        && reloadedConfig.SetAppInputOption("CODE.EXE", "force", "1"),
         "Per-app input settings persist both options", failures)
     reloadedConfig := KeyPersonaConfig(tempConfigDir)
-    AssertTest(reloadedConfig.IsAppMemoryExcluded("Code.exe") && reloadedConfig.IsAppInputForced("code.exe")
-        && !reloadedConfig.IsAppMemoryExcluded("Other.exe") && !reloadedConfig.IsAppInputForced("Other.exe"),
+    AssertTest(reloadedConfig.GetAppInputOption("Code.exe", "autoMemory") = "0" && reloadedConfig.IsAppInputForced("code.exe")
+        && reloadedConfig.GetAppInputOption("Other.exe", "autoMemory") = "inherit" && !reloadedConfig.IsAppInputForced("Other.exe"),
         "Per-app input settings are case-insensitive and opt-in", failures)
-    AssertTest(reloadedConfig.SetAppInputOption("code.exe", "excludeMemory", false)
-        && !reloadedConfig.IsAppMemoryExcluded("code.exe") && reloadedConfig.IsAppInputForced("code.exe"),
+    AssertTest(reloadedConfig.SetAppInputOption("code.exe", "autoMemory", "inherit")
+        && reloadedConfig.GetAppInputOption("code.exe", "autoMemory") = "inherit" && reloadedConfig.IsAppInputForced("code.exe"),
         "Returning to global memory preserves enforcement", failures)
-    AssertTest(reloadedConfig.SetAppInputOption("code.exe", "force", false)
+    AssertTest(reloadedConfig.SetAppInputOption("code.exe", "force", "inherit")
         && !reloadedConfig.AppInputPolicies.Has("code.exe"),
         "Clearing the last input override removes the empty section", failures)
+    reloadedConfig.SetAutoSwitch(false)
+    reloadedConfig.SetAppInputOption("Code.exe", "autoMemory", "1")
+    reloadedConfig.SetAppInputOption("Code.exe", "autoSwitch", "1")
+    reloadedConfig.SetRunAsAdmin(true)
+    reloadedConfig := KeyPersonaConfig(tempConfigDir)
+    AssertTest(reloadedConfig.RunAsAdmin && !reloadedConfig.Enabled && !reloadedConfig.AutoMemory
+        && reloadedConfig.ResolveAppInputOption("code.exe", "autoMemory")
+        && reloadedConfig.ResolveAppInputOption("code.exe", "autoSwitch")
+        && !reloadedConfig.ResolveAppInputOption("other.exe", "autoSwitch"),
+        "Administrator preference and positive app overrides persist independently", failures)
+    reloadedConfig.SetAutoSwitch(true)
+    reloadedConfig.SetRunAsAdmin(false)
     AssertTest(reloadedConfig.PunctuationEnabled && reloadedConfig.PunctuationPairs["parentheses"]
         && !reloadedConfig.PunctuationConvert["dollar"], "Punctuation global options reload", failures)
     AssertTest(!reloadedConfig.ShouldPairPunctuation("Code.exe", "parentheses")
@@ -286,10 +298,15 @@ RunSelfTests(baseDir) {
     AssertTest(reloadedConfig.GetWindowRule(configWindow).Count > 0, "Window rule reload", failures)
     AssertTest(reloadedConfig.RemoveWindowRule(configWindow), "Window rule removal", failures)
     AssertTest(!reloadedConfig.GetWindowRule(configWindow).Count, "Window rule removal verification", failures)
-    AssertTest(reloadedConfig.RemoveApplicationRule("raycast"), "Application rule removal", failures)
     raycastWindow := Map("exe", "Raycast.exe", "path", "Raycast.exe", "class", "Raycast", "title", "Raycast")
-    AssertTest(!RuleEngine(reloadedConfig, testLogger).Match(raycastWindow).Count,
-        "Application rule removal verification", failures)
+    raycastWindow["identityKey"] := "raycast.exe"
+    AssertTest(reloadedConfig.SetWindowRule(raycastWindow, "@global")
+        && reloadedConfig.GetWindowRule(raycastWindow)["state"]["profile"]
+            = reloadedConfig.GetNamedState(reloadedConfig.DefaultState)["profile"],
+        "An explicit global override follows the current global default", failures)
+    AssertTest(reloadedConfig.RemoveWindowRule(raycastWindow)
+        && RuleEngine(reloadedConfig, testLogger).Match(raycastWindow).Count > 0,
+        "Removing a window override preserves the application rule", failures)
     invalidProfileId := "0404:DEADBEEF"
     IniWrite(invalidProfileId, reloadedConfig.Path, "state.invalid-input", "profile")
     IniWrite("unknown", reloadedConfig.Path, "state.invalid-input", "imeOpen")
@@ -386,13 +403,6 @@ RunSelfTests(baseDir) {
         false, Map(), policyState, Map(), defaultPolicyState)
     AssertTest(unmanagedTarget.Count = 0,
         "Disabled automatic memory leaves unmatched windows unchanged", failures)
-    observedBaseline := StateClone(policyState)
-    observedBaseline["source"] := "observed"
-    baselineTarget := KeyPersonaApp.ChooseDesiredState(
-        true, observedBaseline, Map(), ruleMatch, defaultPolicyState)
-    AssertTest(MapGet(baselineTarget, "profile", "") = "0804:rule"
-        && MapGet(baselineTarget, "source", "") = "rule",
-        "Observation baseline does not become automatic memory", failures)
     AssertTest(KeyPersonaApp.IsSameTopLevelWindow(Map("hwnd", 100), Map("hwnd", 100)),
         "Foreground observation accepts the current top-level window", failures)
     AssertTest(!KeyPersonaApp.IsSameTopLevelWindow(Map("hwnd", 100), Map("hwnd", 200)),
@@ -753,7 +763,9 @@ TestProjectIconPaint(button, iconSize) {
 TestAppInputPolicy(config, logger, failures) {
     originalAutoMemory := config.AutoMemory
     originalPolicies := config.AppInputPolicies
-    config.AppInputPolicies := Map("probe.exe", Map("excludeMemory", true, "force", true))
+    originalSwitch := config.Enabled
+    config.AppInputPolicies := Map("probe.exe", Map("autoMemory", "0", "force", true))
+    config.Enabled := true
     config.AutoMemory := true
     try {
         actual := Map("profile", "0804:probe", "kind", "tip", "imeOpen", "1", "focusHwnd", 101)
@@ -769,7 +781,13 @@ TestAppInputPolicy(config, logger, failures) {
         AssertTest(!app.SelectDesiredState(app.CurrentWindow, Map()).Count,
             "An excluded app without a rule has no automatic target", failures)
 
-        config.AppInputPolicies["probe.exe"]["excludeMemory"] := false
+        config.AppInputPolicies["probe.exe"]["autoMemory"] := "inherit"
+        freshWindow := Map("hwnd", 200, "exe", "fresh.exe")
+        app.Saved := Map()
+        initial := app.SelectDesiredState(freshWindow, Map(), true)
+        app.Saved := remembered
+        AssertTest(initial["profile"] = app.SelectDesiredState(freshWindow, Map())["profile"],
+            "A second window learning does not change an existing window's fallback", failures)
         desired := app.SelectDesiredState(app.CurrentWindow, rule)
         app.SetEnforcedTarget(app.CurrentWindow, desired)
         AssertTest(app.Enforcement.Target["profile"] = remembered["profile"],
@@ -796,6 +814,19 @@ TestAppInputPolicy(config, logger, failures) {
             "An explicit rule can be forced even with global memory off", failures)
         app.Restore.Cancel()
 
+        config.AppInputPolicies["probe.exe"]["autoMemory"] := "1"
+        config.AppInputPolicies["probe.exe"]["autoSwitch"] := "0"
+        app.SetEnforcedTarget(app.CurrentWindow, desired)
+        AssertTest(app.CanRemember(app.CurrentWindow) && !app.CanSwitch(app.CurrentWindow)
+            && !app.Enforcement.Target.Count, "Per-app switch off keeps learning and suspends enforcement", failures)
+        app.ApplyState(app.CurrentWindow, desired, "restore", true)
+        AssertTest(!app.Restore.Pending && app.LayoutRequests = 2,
+            "An explicit switch-off override prevents restoration writes", failures)
+        config.Enabled := false
+        config.AppInputPolicies["probe.exe"]["autoSwitch"] := "1"
+        AssertTest(app.CanSwitch(app.CurrentWindow) && !app.CanSwitch(freshWindow),
+            "Per-app switch on takes precedence over the global off setting", failures)
+
         app.Enforcement.SetTarget("probe.exe", actual)
         AssertTest(!app.Enforcement.ShouldRestore(Map("profile", "0804:unknown"), 1000)
             && !app.Enforcement.ShouldRestore(Map("profile", "0804:probe", "kind", "tip"), 1000)
@@ -806,6 +837,7 @@ TestAppInputPolicy(config, logger, failures) {
     } finally {
         config.AutoMemory := originalAutoMemory
         config.AppInputPolicies := originalPolicies
+        config.Enabled := originalSwitch
     }
 }
 
@@ -836,7 +868,6 @@ class InputRestorationProbe extends KeyPersonaApp {
     __New(config, logger, actual) {
         this.Config := config
         this.Logger := logger
-        this.Enabled := true
         this.ShuttingDown := false
         this.ObserveOnly := false
         this.Actual := actual

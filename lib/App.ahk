@@ -22,8 +22,6 @@ class KeyPersonaApp {
         this.Store := StateStore(this.Config.StatePath, this.Logger)
         this.CurrentWindow := Map()
         this.CurrentState := Map()
-        this.CurrentRule := Map()
-        this.CurrentSource := ""
         this.SessionStates := Map()
         this.SessionWindows := Map()
         this.ObservationState := Map()
@@ -71,7 +69,7 @@ class KeyPersonaApp {
     }
 
     OnWinEventMessage(wParam, lParam, message, receiverHwnd) {
-        if !this.Enabled || this.ShuttingDown
+        if this.ShuttingDown
             return 0
         if (lParam = WindowWinEventHook.EVENT_SYSTEM_FOREGROUND) {
             if (wParam != this.ForegroundHwnd) {
@@ -88,7 +86,7 @@ class KeyPersonaApp {
     }
 
     QueueWindowCheck() {
-        if this.WindowCheckQueued || !this.Enabled || this.ShuttingDown
+        if this.WindowCheckQueued || this.ShuttingDown
             return
         this.WindowCheckQueued := true
         SetTimer(this.WindowCallback, -1)
@@ -160,18 +158,17 @@ class KeyPersonaApp {
         this.ObservationState := Map()
         this.CandidateSignature := ""
         this.CurrentWindow := nextWindow
-        this.CurrentRule := this.MatchRule(nextWindow)
+        this.CurrentState := Map()
+        matchedRule := this.MatchRule(nextWindow)
         if this.ApplyQueuedSelection(nextWindow)
             return
         desired := this.SelectDesiredState(nextWindow, this.CurrentRule)
         this.SetEnforcedTarget(nextWindow, desired)
         this.BeginBurst()
-        this.CurrentSource := MapGet(desired, "source", "")
-        this.Logger.Info("Foreground: " nextWindow["exe"] " [" nextWindow["mode"] "]"
-            . (this.CurrentRule.Count ? " rule=" this.CurrentRule["name"] : ""))
-        if this.ObserveOnly || !desired.Count {
-            this.SetObservationBaseline(nextWindow, this.ReadState(nextWindow), "observed")
-            this.Tray.Refresh(true)
+            . (matchedRule.Count ? " rule=" matchedRule["name"] : ""))
+        if this.ObserveOnly || !desired.Count || !this.CanSwitch(nextWindow) {
+            if this.CanRemember(nextWindow)
+                this.SetObservationBaseline(nextWindow, this.ReadState(nextWindow))
             return
         }
         reason := MapGet(desired, "source", "") = "learned" ? "restore" : "default"
@@ -201,17 +198,20 @@ class KeyPersonaApp {
     }
 
     CanRemember(windowInfo) {
-        return this.Config.AutoMemory && !this.Config.IsAppMemoryExcluded(MapGet(windowInfo, "exe", ""))
+        return windowInfo.Count && this.Config.ResolveAppInputOption(WindowIdentity.AppSelectorFor(windowInfo), "autoMemory")
+    }
+
+    CanSwitch(windowInfo) {
+        return windowInfo.Count && this.Config.ResolveAppInputOption(WindowIdentity.AppSelectorFor(windowInfo), "autoSwitch")
     }
 
     SetEnforcedTarget(windowInfo, desired) {
-        exe := MapGet(windowInfo, "exe", "")
-        this.Enforcement.SetTarget(exe, this.Config.IsAppInputForced(exe) ? desired : Map())
+        exe := WindowIdentity.AppSelectorFor(windowInfo)
+        this.Enforcement.SetTarget(exe, this.CanSwitch(windowInfo) && this.Config.IsAppInputForced(exe) ? desired : Map())
     }
 
     static ChooseDesiredState(autoMemory, sessionState, savedState, matchedRule, defaultState) {
-        if (autoMemory && sessionState.Count && HasKnownProfile(sessionState)
-            && KeyPersonaApp.IsRestorableSessionState(sessionState))
+        if autoMemory && sessionState.Count && HasKnownProfile(sessionState)
             return StateClone(sessionState)
         if (autoMemory && savedState.Count && HasKnownProfile(savedState)) {
             state := StateClone(savedState)
@@ -228,10 +228,6 @@ class KeyPersonaApp {
         state := StateClone(defaultState)
         state["source"] := "default"
         return state
-    }
-
-    static IsRestorableSessionState(state) {
-        return MapGet(state, "source", "") != "observed"
     }
 
     static IsSameTopLevelWindow(left, right) {
@@ -254,7 +250,7 @@ class KeyPersonaApp {
     }
 
     ApplyState(windowInfo, desiredState, reason := "restore", focusSignal := false) {
-        if !this.Enabled || this.ShuttingDown || this.ObserveOnly || !windowInfo.Count || !desiredState.Count
+        if !this.CanSwitch(windowInfo) || this.ShuttingDown || this.ObserveOnly || !desiredState.Count
             return
         this.ObservationState := Map()
         this.CandidateSignature := ""
@@ -342,30 +338,20 @@ class KeyPersonaApp {
         }
     }
 
-    SetObservationBaseline(windowInfo, actualState, source := "") {
+    ResolveMenuPolicy(context) {
+        windowInfo := context.window
+        context.rule := windowInfo.Count ? this.MatchRule(windowInfo) : Map()
+        context.desired := windowInfo.Count ? this.SelectDesiredState(windowInfo, context.rule) : Map()
+        return context
+    }
+
+    SetObservationBaseline(windowInfo, actualState) {
         if !KeyPersonaApp.IsSameTopLevelWindow(this.CurrentWindow, windowInfo)
             return
-        matchedRule := this.MatchRule(windowInfo)
-        if (source = "") {
-            source := "observed"
-            hwndKey := windowInfo["hwnd"] ""
-            if (this.CanRemember(windowInfo) && this.SessionStates.Has(hwndKey)
-                && StateMatches(actualState, this.SessionStates[hwndKey])) {
-                source := MapGet(this.SessionStates[hwndKey], "source", "learned")
-            } else if (matchedRule.Count && StateMatches(actualState, matchedRule["state"])) {
-                source := "rule"
-            } else {
-                defaultState := this.Config.GetNamedState(this.Config.DefaultState)
-                if (defaultState.Count && StateMatches(actualState, defaultState))
-                    source := "default"
-            }
-        }
         this.ObservationState := this.CanRemember(windowInfo) && HasKnownProfile(actualState)
             ? StateClone(actualState) : Map()
         this.CandidateSignature := ""
         this.CurrentState := actualState
-        this.CurrentRule := matchedRule
-        this.CurrentSource := source
     }
 
     SyncDiscoveredProfiles(refreshed := false) {
@@ -456,7 +442,7 @@ class KeyPersonaApp {
     }
 
     Poll() {
-        if !this.Enabled || this.ShuttingDown
+        if !this.PollPeriod || this.ShuttingDown
             return
         foreground := DllCall("user32\GetForegroundWindow", "Ptr")
         if (foreground != this.ForegroundHwnd || this.ProfilePolicyRefreshNeeded) {
@@ -491,7 +477,6 @@ class KeyPersonaApp {
         }
         if this.ObserveOnly {
             this.SetObservationBaseline(windowInfo, actual)
-            this.Tray.Refresh()
             return
         }
         if target.Count {
@@ -501,11 +486,9 @@ class KeyPersonaApp {
         if (!previous.Count || previous["focusHwnd"] != actual["focusHwnd"]
             || MapGet(previous, "focusThreadId", 0) != MapGet(actual, "focusThreadId", 0)) {
             this.SetObservationBaseline(windowInfo, actual)
-            this.Tray.Refresh()
             return
         }
         comparison := KeyPersonaApp.CompareObservation(previous, actual)
-        source := this.CurrentSource
         if comparison.changed {
             signature := StateSignature(comparison.state)
             now := TickCount64()
@@ -519,17 +502,15 @@ class KeyPersonaApp {
                 this.ScheduleObservationCheck(60 - (now - this.CandidateSince))
                 return
             }
-            source := "learned"
             remembered := comparison.state
-            remembered["source"] := source
+            remembered["source"] := "learned"
             this.SessionStates[windowInfo["hwnd"] ""] := StateClone(remembered)
-            this.Store.Upsert(windowInfo, remembered, source)
-            this.ScheduleFlush()
+            if this.Store.Upsert(windowInfo, remembered, "learned")
+                this.ScheduleFlush()
             this.Logger.Info("Learned " windowInfo["exe"] ": " StateLabel(remembered))
         }
-        this.SetObservationBaseline(windowInfo, comparison.state, source)
+        this.SetObservationBaseline(windowInfo, comparison.state)
         this.CurrentState := actual
-        this.Tray.Refresh()
     }
 
     ObserveEnforcedState(windowInfo, actual, target) {
@@ -551,13 +532,11 @@ class KeyPersonaApp {
     }
 
     ConfirmObservation() {
-        if this.Enabled && !this.ShuttingDown && this.CandidateSignature != ""
+        if this.PollPeriod && !this.ShuttingDown && this.CandidateSignature != ""
             this.ObserveCurrentWindow()
     }
 
     BeginBurst() {
-        if !this.Enabled
-            return
         if this.Enforcement.Target.Count {
             this.SetPollPeriod(this.Config.ForcePollMs)
             return
@@ -587,35 +566,27 @@ class KeyPersonaApp {
     }
 
     ToggleEnabled(*) {
-        this.Enabled := !this.Enabled
-        if this.Enabled {
-            this.Logger.Info("Enabled")
-            this.ForegroundHwnd := -1
-            this.QueueWindowCheck()
-        } else {
-            this.Logger.Info("Disabled")
-            this.Restore.Cancel()
-            this.ExplicitApply := 0
-            this.ObservationState := Map()
-            this.CandidateSignature := ""
-            this.SetPollPeriod(0)
-            SetTimer(this.WindowCallback, 0)
-            SetTimer(this.ConfirmCallback, 0)
-            this.WindowCheckQueued := false
-            this.FocusEventHwnd := 0
+        wasSwitching := this.CanSwitch(this.CurrentWindow)
+        try this.Config.SetAutoSwitch(!this.Config.Enabled)
+        catch Error as failure {
+            this.ReportSettingsError(failure)
+            return
         }
-        this.Tray.Refresh(true)
+        this.RefreshCurrentInputPolicy(!wasSwitching && this.CanSwitch(this.CurrentWindow))
     }
 
     ToggleAutoMemory(*) {
-        enabled := this.Config.SetAutoMemory(!this.Config.AutoMemory)
+        try enabled := this.Config.SetAutoMemory(!this.Config.AutoMemory)
+        catch Error as failure {
+            this.ReportSettingsError(failure)
+            return
+        }
         this.RefreshCurrentInputPolicy()
         this.Logger.Info("Automatic memory " (enabled ? "enabled" : "disabled"))
         TrayTip(enabled
             ? "已开启全局自动记忆。各应用继续使用自己的输入法设置。"
-            : "已关闭全局自动记忆。已启用强制保持的应用可继续使用匹配的用户规则。",
+            : "已关闭全局自动记忆。应用覆盖继续生效。",
             AppInfo.Name, "Mute")
-        this.Tray.Refresh(true)
     }
 
     ToggleAppInputOption(exe, option, *) {
@@ -627,60 +598,65 @@ class KeyPersonaApp {
         }
         if !saved {
             TrayTip("无法保存此应用的输入法设置。", AppInfo.Name, "Iconx")
+    SetAppInputOption(exe, option, mode, *) {
+        if this.Config.GetAppInputOption(exe, option) = mode
+            return
+        wasSwitching := this.CanSwitch(this.CurrentWindow)
+        try saved := this.Config.SetAppInputOption(exe, option, mode)
+        catch Error as failure {
+            this.ReportSettingsError(failure)
             return
         }
-        if StrLower(MapGet(this.CurrentWindow, "exe", "")) = StrLower(exe)
-            this.RefreshCurrentInputPolicy()
-        this.Tray.Refresh(true)
+        if !saved
+            return
+        if WindowIdentity.AppSelectorFor(this.CurrentWindow) = exe
+            this.RefreshCurrentInputPolicy(!wasSwitching && this.CanSwitch(this.CurrentWindow))
     }
 
-    RefreshCurrentInputPolicy() {
+    RefreshCurrentInputPolicy(reapply := false) {
         this.Restore.Cancel()
         this.ObservationState := Map()
         this.CandidateSignature := ""
         if !this.CurrentWindow.Count
             return
+        }
         window := this.CurrentWindow
-        this.CurrentRule := this.MatchRule(window)
-        desired := this.SelectDesiredState(window, this.CurrentRule)
+        desired := this.SelectDesiredState(window, this.MatchRule(window), true)
         this.SetEnforcedTarget(window, desired)
         this.BeginBurst()
-        if this.Enabled
+        if reapply && desired.Count
+            this.QueueExplicitApply(window, desired, "policy-enabled")
+        else
             this.ObserveCurrentWindow()
     }
 
-    SetCurrentState(stateName) {
-        if !this.CurrentWindow.Count
+    SetCurrentState(windowInfo, stateName, *) {
+        if !this.ValidateMenuTarget(windowInfo)
             return
-        state := this.Config.GetNamedState(stateName)
+        rule := this.Config.GetWindowRule(windowInfo)
+        if MapGet(rule, "stateName", "") = stateName
+            return
+        state := this.Config.GetNamedState(stateName = "@global" ? this.Config.DefaultState : stateName)
         if !state.Count
             return
-        if !this.Config.SetWindowRule(this.CurrentWindow, stateName) {
-            TrayTip("无法保存当前窗口的用户规则。", AppInfo.Name, "Iconx")
+        try {
+            if !this.Config.SetWindowRule(windowInfo, stateName)
+                throw Error("Could not save the window rule")
+        } catch Error as failure {
+            this.ReportSettingsError(failure)
             return
         }
         this.RefreshRuleEngine()
-        this.Restore.Cancel()
-        this.ObservationState := Map()
-        this.CandidateSignature := ""
-        hwndKey := this.CurrentWindow["hwnd"] ""
-        if this.Store.Remove(this.CurrentWindow)
-            this.ScheduleFlush()
-        if this.SessionStates.Has(hwndKey)
-            this.SessionStates.Delete(hwndKey)
+        this.ForgetWindow(windowInfo)
         state["source"] := "rule"
-        this.CurrentRule := this.MatchRule(this.CurrentWindow)
-        this.CurrentSource := "rule"
-        this.SetEnforcedTarget(this.CurrentWindow, state)
-        this.BeginBurst()
-        this.QueueExplicitApply(this.CurrentWindow, state, "window-default")
-        TrayTip("已设置当前窗口的默认输入法；返回窗口后立即切换。`n旧自动记忆已清除。",
+        this.AfterTargetEdit(windowInfo, state, "window-default")
+        TrayTip(this.CanSwitch(windowInfo) ? "已设置默认输入法，返回窗口后应用。" : "已保存默认输入法。",
             AppInfo.Name, "Mute")
         this.Tray.Refresh(true)
     }
 
     QueueExplicitApply(windowInfo, state, reason) {
-        if !this.Enabled || this.ObserveOnly
+        if !this.CanSwitch(windowInfo) || this.ObserveOnly
             return
         this.ExplicitApply := {
             window: windowInfo, state: StateClone(state), reason: reason, until: TickCount64() + 2000
@@ -693,7 +669,7 @@ class KeyPersonaApp {
         if !selection
             return false
         this.ExplicitApply := 0
-        if (!KeyPersonaApp.IsSameTopLevelWindow(selection.window, windowInfo)
+        if (!this.CanSwitch(windowInfo) || !KeyPersonaApp.IsSameTopLevelWindow(selection.window, windowInfo)
             || TickCount64() > selection.until
             || (!this.CanRemember(windowInfo) && MapGet(selection.state, "source", "") != "rule"))
             return false
@@ -703,8 +679,8 @@ class KeyPersonaApp {
         return true
     }
 
-    UseGlobalForCurrentWindow(*) {
-        if !this.CurrentWindow.Count
+    UseInheritedWindowRule(windowInfo, *) {
+        if !this.ValidateMenuTarget(windowInfo) || !this.Config.GetWindowRule(windowInfo).Count
             return
         saved := this.Store.Find(this.CurrentWindow)
         legacyManual := MapGet(saved, "source", "") = "manual"
@@ -712,46 +688,44 @@ class KeyPersonaApp {
         applicationRule := this.Rules.Match(this.CurrentWindow)
         if (!hasWindowRule && !applicationRule.Count && !legacyManual)
             return
-
-        this.Restore.Cancel()
-        this.ExplicitApply := 0
-        removedCount := 0
-        if this.Config.RemoveWindowRule(this.CurrentWindow) {
-            removedCount += 1
         }
         this.RefreshRuleEngine()
-        Loop 20 {
-            applicationRule := this.Rules.Match(this.CurrentWindow)
-            if !applicationRule.Count
-                break
-            if !this.Config.RemoveApplicationRule(applicationRule["name"])
-                break
-            removedCount += 1
-            this.RefreshRuleEngine()
+        desired := this.SelectDesiredState(windowInfo, this.MatchRule(windowInfo))
+        this.AfterTargetEdit(windowInfo, desired, "rule-removed")
+        TrayTip("已移除此规则，恢复继承设置。", AppInfo.Name, "Mute")
+    }
+
+    SetDefaultState(stateName, *) {
+        if this.Config.DefaultState = stateName
+            return
+        try {
+            if !this.Config.SetDefaultState(stateName)
+                return
+        } catch Error as failure {
+            this.ReportSettingsError(failure)
+            return
         }
-        if legacyManual {
-            this.Store.Remove(this.CurrentWindow)
-            this.ScheduleFlush()
-            removedCount += 1
+        this.RefreshCurrentInputPolicy()
+        this.Logger.Info("Default state changed to " stateName)
+        TrayTip("全局默认：" this.Tray.ShortState(this.Config.GetNamedState(stateName)), AppInfo.Name, "Mute")
+    }
+
+    ToggleRunAsAdmin(*) {
+        try {
+            if !this.Config.RunAsAdmin && !A_IsAdmin {
+                if !this.Store.Flush()
+                    throw Error("无法保存输入法记忆，暂缓重启。")
+                ElevationManager.RequestRestart(RuntimeBaseDir(), true)
+                ExitApp()
+            }
+            enabled := !this.Config.RunAsAdmin
+            this.ApplyAdminPreference(enabled)
+            TrayTip(enabled ? "以后将以管理员身份启动。" : "下次启动将使用默认权限。",
+                AppInfo.Name, "Mute")
+        } catch Error as failure {
+            this.Logger.Warn("Administrator preference change did not complete: " failure.Message)
+            TrayTip("未更改管理员设置。" failure.Message, AppInfo.Name, "Iconx")
         }
-        hwndKey := this.CurrentWindow["hwnd"] ""
-        if (this.SessionStates.Has(hwndKey)
-            && MapGet(this.SessionStates[hwndKey], "source", "") = "rule")
-            this.SessionStates.Delete(hwndKey)
-        this.CurrentRule := this.MatchRule(this.CurrentWindow)
-        desired := this.SelectDesiredState(this.CurrentWindow, this.CurrentRule)
-        this.CurrentSource := MapGet(desired, "source", "")
-        this.SetEnforcedTarget(this.CurrentWindow, desired)
-        this.BeginBurst()
-        if desired.Count
-            this.QueueExplicitApply(this.CurrentWindow, desired, "rule-removed")
-        else if !desired.Count {
-            this.CurrentState := this.ReadState(this.CurrentWindow)
-            this.CurrentSource := "observed"
-        }
-        if removedCount
-            TrayTip("已移除当前窗口的用户规则；自动记忆保持不变。", AppInfo.Name, "Mute")
-        this.Tray.Refresh(true)
     }
 
     ApplyAdminPreference(enabled) {
@@ -776,39 +750,31 @@ class KeyPersonaApp {
         }
     }
 
-    ClearCurrentRecord(*) {
-        if !this.CurrentWindow.Count
-            return
-        hwndKey := this.CurrentWindow["hwnd"] ""
-        saved := this.Store.Find(this.CurrentWindow)
-        sessionSource := this.SessionStates.Has(hwndKey)
-            ? MapGet(this.SessionStates[hwndKey], "source", "") : ""
-        hasSessionMemory := sessionSource = "learned" || sessionSource = "manual"
-        if (!saved.Count && !hasSessionMemory) {
-            TrayTip("当前窗口没有可清除的自动记忆。", AppInfo.Name, "Mute")
-            return
-        }
-        this.Restore.Cancel()
-        this.ExplicitApply := 0
-        this.ObservationState := Map()
-        this.CandidateSignature := ""
-        if saved.Count
-            this.Store.Remove(this.CurrentWindow)
+    HasWindowMemory(windowInfo) {
+        return this.SessionStates.Has(MapGet(windowInfo, "hwnd", 0) "") || this.Store.Find(windowInfo).Count
+    }
+
+    ForgetWindow(windowInfo) {
+        hwndKey := windowInfo["hwnd"] ""
         if this.SessionStates.Has(hwndKey)
             this.SessionStates.Delete(hwndKey)
-        this.ScheduleFlush()
-        rule := this.MatchRule(this.CurrentWindow)
-        desired := this.SelectDesiredState(this.CurrentWindow, rule)
-        this.CurrentSource := MapGet(desired, "source", "")
-        this.SetEnforcedTarget(this.CurrentWindow, desired)
-        this.BeginBurst()
-        if desired.Count
-            this.QueueExplicitApply(this.CurrentWindow, desired, "clear")
-        else if !desired.Count {
-            this.CurrentState := this.ReadState(this.CurrentWindow)
-            this.CurrentSource := "observed"
+        if this.SessionWindows.Has(hwndKey)
+            this.SessionWindows[hwndKey]["memoryInitialized"] := true
+        windowInfo["memoryInitialized"] := true
+        if this.Store.Remove(windowInfo) && !this.Store.Flush() {
+            this.ScheduleFlush()
+            TrayTip("记忆暂未写入磁盘，将再次尝试保存。", AppInfo.Name, "Mute")
         }
         this.Tray.Refresh(true)
+    }
+
+    ClearCurrentRecord(windowInfo, *) {
+        if !this.ValidateMenuTarget(windowInfo) || !this.HasWindowMemory(windowInfo)
+            return
+        this.ForgetWindow(windowInfo)
+        this.AfterTargetEdit(windowInfo, this.SelectDesiredState(windowInfo, this.MatchRule(windowInfo)), "clear")
+    }
+
     }
 
     ClearAllRecords(*) {
@@ -824,13 +790,11 @@ class KeyPersonaApp {
         if !this.Store.Flush() {
             this.ScheduleFlush()
             TrayTip("无法保存清除结果，请检查程序目录是否可写。", AppInfo.Name, "Iconx")
-            this.Tray.Refresh(true)
             return
         }
         this.RefreshCurrentInputPolicy()
         this.Logger.Info("Cleared all automatic memories: " removed " persisted record(s)")
         TrayTip("已清除所有自动记忆；用户规则和全局默认设置保持不变。", AppInfo.Name, "Mute")
-        this.Tray.Refresh(true)
     }
 
     ReloadConfiguration(*) {
