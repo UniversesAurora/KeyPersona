@@ -13,4 +13,6 @@
   pwsh -NoProfile -File .\build.ps1
   ```
 
+- Keep each commit focused on one coherent change. Include its related tests and documentation.
+- Commit features, fixes, and their documentation before preparing a release. A release commit contains only version metadata, the changelog, and the release notes for that version.
 - Do not bump the version or create a tag unless the task explicitly requests a release.

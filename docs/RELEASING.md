@@ -2,7 +2,8 @@
 
 ## 什么时候发布
 
-- 功能、修复、文档和资源的日常改动只创建普通 commit。
+- 每个提交只处理一件事。功能或修复可以和对应的测试、文档放在同一提交。不同的功能和修复分开提交。
+- 发布提交只包含版本号、`CHANGELOG.md` 和该版本的发布说明。
 - 构建或安装一次不等于发布新版本。
 - 只有维护者明确决定发布并给出版本号时，才修改版本、创建 tag 和 GitHub Release。
 - 已发布的 tag 和附件不覆盖、不重写。发布后发现问题时，使用新的补丁版本。
@@ -16,7 +17,7 @@
 - 64 位 AutoHotkey v2 和官方 Ahk2Exe：源码自检、编译和编译后自检。
 - GitHub CLI `gh`：创建 GitHub Release 和上传附件。先用 `gh auth status` 确认已经登录正确账号。
 
-开始前确认工作区没有无关改动：
+先完成本版的功能和修复提交，再从干净的工作区准备发布。README、配置示例和架构文档随对应的改动提交。
 
 ```powershell
 git status --short
@@ -30,8 +31,7 @@ git fetch origin --tags
 1. 在 `lib/AppInfo.ahk` 中同时更新 `AppInfo.Version` 和 `Ahk2Exe-SetVersion`。
 2. 在 `CHANGELOG.md` 顶部新增 `1.0.1`，写明发布日期和用户能感知的新增、修改、修复。没有内容的分类可以省略。
 3. 新建 `docs/releases/v1.0.1.md`。这份文件会直接作为 GitHub Release notes，至少写清下载文件、主要变更、升级提示、已知限制和验证情况。
-4. 检查 README、配置示例和架构文档是否仍与实际行为一致。
-5. 确认仓库里没有运行时配置、状态文件、日志、构建产物、凭据或本机绝对路径。
+4. 确认待发布的代码和文档都已另行提交。检查仓库中是否误纳入运行时配置、状态文件、日志、构建产物、凭据或本机绝对路径。
 
 ## 2. 构建并打包
 
@@ -95,19 +95,25 @@ try {
 $version = '1.0.1'
 $tag = "v$version"
 
-git add --all
-git commit -m "Release KeyPersona $version"
-git tag -a $tag -m "KeyPersona $version"
-git push origin main
-git push origin $tag
+git add -- lib/AppInfo.ahk CHANGELOG.md "docs/releases/$tag.md"
+git diff --cached --name-status
+git diff --cached
 ```
 
-确认本地 tag、远端 `main` 和远端 tag 指向同一个 commit：
+确认暂存区只有发布相关变化。`lib/AppInfo.ahk` 只应改动两处版本号。核对后提交并同时推送 `main` 和标签。
+
+```powershell
+git commit -m "Release KeyPersona $version"
+git tag -a $tag -m "KeyPersona $version"
+git push --atomic origin main "refs/tags/$tag"
+```
+
+确认本地提交、本地标签指向的提交、远端 `main` 和远端标签指向的提交一致。
 
 ```powershell
 git rev-parse HEAD
-git rev-parse $tag
-git ls-remote origin refs/heads/main "refs/tags/$tag^{}"
+git rev-parse "${tag}^{commit}"
+git ls-remote origin refs/heads/main "refs/tags/${tag}^{}"
 ```
 
 如果这里不一致，先查明原因，不要创建 Release，也不要强制移动已经发布的 tag。
