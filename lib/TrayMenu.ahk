@@ -7,6 +7,7 @@ class TrayMenuController {
         this.StateMenu := ""
         this.DefaultMenu := ""
         this.PunctuationMenu := ""
+        this.AppInputMenu := ""
         this.About := AboutDialog()
         this.LastLeftClick := 0
         this.TrayMessageCallback := ObjBindMethod(this, "OnTrayMessage")
@@ -24,10 +25,14 @@ class TrayMenuController {
             state := Map()
             rule := Map()
         }
+        exe := MapGet(window, "exe", "")
+        excluded := this.App.Config.IsAppMemoryExcluded(exe)
+        forced := this.App.Config.IsAppInputForced(exe)
         fingerprint := this.App.Enabled "|" MapGet(window, "hwnd", 0) "|"
             . StateSignature(state) "|" MapGet(rule, "name", "") "|"
             . this.App.CurrentSource "|" this.App.Config.DefaultState "|"
-            . this.App.Config.AutoMemory "|" this.App.Config.PunctuationRevision
+            . this.App.Config.AutoMemory "|" this.App.Config.PunctuationRevision "|"
+            . excluded "|" forced "|" StateSignature(this.App.Enforcement.Target)
         if !force && fingerprint = this.LastFingerprint
             return
         this.LastFingerprint := fingerprint
@@ -44,12 +49,12 @@ class TrayMenuController {
             tray.Check("开机自启动")
         tray.Add()
         if window.Count {
-            status := "当前窗口：" MapGet(window, "exe", "未知") " · " this.ShortState(state)
+            status := StrReplace("当前窗口：" MapGet(window, "exe", "未知") " · " this.ShortState(state), "&", "&&")
             tray.Add(status, (*) => 0)
             tray.Disable(status)
             identityType := MapGet(window, "mode", "app") = "window" ? "窗口" : "应用"
             identityId := Fnv1a32(MapGet(window, "identityKey", ""))
-            sourceStatus := "来源：" this.SourceLabel(this.App.CurrentSource, rule)
+            sourceStatus := "来源：" this.SourceLabel(this.App.CurrentSource, rule, window)
                 . " · " identityType " ID " identityId
             tray.Add(sourceStatus, (*) => 0)
             tray.Disable(sourceStatus)
@@ -63,8 +68,10 @@ class TrayMenuController {
             defaultStatus .= this.ShortState(defaultState)
         else
             defaultStatus .= "未配置"
+        defaultStatus := StrReplace(defaultStatus, "&", "&&")
         tray.Add(defaultStatus, (*) => 0)
         tray.Disable(defaultStatus)
+        tray.Add()
         this.DefaultMenu := Menu()
         this.StateMenu := Menu()
         hasUserRule := rule.Count > 0 || this.App.CurrentSource = "manual"
@@ -73,28 +80,20 @@ class TrayMenuController {
         if !hasUserRule
             this.StateMenu.Check("全局默认（无用户规则）")
         this.StateMenu.Add()
-        usedStateLabels := Map()
-        for stateName, namedState in this.App.Config.NamedStates {
-            label := this.StateMenuLabel(stateName, namedState)
-            if usedStateLabels.Has(label)
-                label .= " · " SubStr(Fnv1a32(stateName "|" MapGet(namedState, "profile", "")), 1, 6)
-            usedStateLabels[label] := true
-            this.DefaultMenu.Add(label, ObjBindMethod(this, "SetDefaultState", stateName))
-            if (stateName = this.App.Config.DefaultState)
-                this.DefaultMenu.Check(label)
-            this.StateMenu.Add(label, ObjBindMethod(this, "SetState", stateName))
-            if (stateName = selectedStateName)
-                this.StateMenu.Check(label)
-        }
+        this.AddInputChoices(this.DefaultMenu, this.App.Config.DefaultState, "SetDefaultState")
+        this.AddInputChoices(this.StateMenu, selectedStateName, "SetState")
         tray.Add("全局默认输入法", this.DefaultMenu)
         tray.Add("当前窗口默认输入法", this.StateMenu)
-        tray.Add("清除当前窗口的自动记忆", ObjBindMethod(this.App, "ClearCurrentRecord"))
-        tray.Add("清除所有自动记忆…", ObjBindMethod(this.App, "ClearAllRecords"))
-        if !window.Count {
+        if !window.Count
             tray.Disable("当前窗口默认输入法")
-            tray.Disable("清除当前窗口的自动记忆")
+        appLabel := exe = "" ? "当前应用输入法设置" : "当前应用输入法设置（" StrReplace(exe, "&", "&&") "）"
+        if exe = "" {
+            tray.Add(appLabel, (*) => 0)
+            tray.Disable(appLabel)
+        } else {
+            this.AppInputMenu := this.BuildAppInputMenu(exe, excluded, forced)
+            tray.Add(appLabel, this.AppInputMenu)
         }
-        tray.Add()
         this.PunctuationMenu := this.BuildPunctuationMenu(window)
         tray.Add("中文符号转英文", this.PunctuationMenu)
         tray.Add()
@@ -111,6 +110,97 @@ class TrayMenuController {
         tray.Add()
         tray.Add("关于 " AppInfo.Name, ObjBindMethod(this, "ShowAbout"))
         tray.Add("退出", ObjBindMethod(this, "ExitApplication"))
+    }
+
+    AddInputChoices(targetMenu, selected, method) {
+        languages := Map()
+        for stateName, state in this.App.Config.NamedStates {
+            profileId := StrLower(MapGet(state, "profile", "unknown"))
+            langId := InputProfiles.LanguageId(profileId)
+            if !languages.Has(langId)
+                languages[langId] := Map()
+            profiles := languages[langId]
+            if !profiles.Has(profileId)
+                profiles[profileId] := []
+            profiles[profileId].Push(state)
+        }
+        if !languages.Count {
+            targetMenu.Add("未找到可用输入法", (*) => 0)
+            targetMenu.Disable("未找到可用输入法")
+            return
+        }
+        position := DllCall("user32\GetMenuItemCount", "Ptr", targetMenu.Handle, "Int")
+        options := ""
+        for langId, profiles in languages {
+            heading := InputProfiles.LanguageDisplayName(langId)
+            if (heading = "")
+                heading := langId ? "语言 " Hex(langId, 4) : "其他输入法"
+            targetMenu.Insert("", StrReplace(heading, "&", "&&"), (*) => 0, options)
+            targetMenu.Disable(++position "&")
+            options := "BarBreak"
+            for profileId, states in profiles
+                this.AddInputSourceChoice(targetMenu, profileId, states, selected, method, ++position)
+        }
+    }
+
+    AddInputSourceChoice(targetMenu, profileId, states, selected, method, position) {
+        label := StrReplace(this.App.Profiles.DisplayName(profileId), "&", "&&")
+        first := states[1]
+        if (states.Length = 1 && ImeMode.ModeLabel(profileId, first["imeOpen"]) = "") {
+            targetMenu.Insert("", label, ObjBindMethod(this, method, first["name"]))
+            if (first["name"] = selected)
+                targetMenu.Check(position "&")
+            return
+        }
+        modes := Menu()
+        usedModeLabels := Map()
+        checked := false
+        for open in ["1", "0", "preserve"] {
+            for state in states {
+                name := state["name"]
+                mode := ImeMode.ModeLabel(profileId, state["imeOpen"])
+                if (open = "preserve" ? mode != "" : state["imeOpen"] != open)
+                    continue
+                modeLabel := TrayMenuController.UniqueLabel(
+                    mode != "" ? mode : "仅切换输入法", name, usedModeLabels)
+                modes.Add(modeLabel, ObjBindMethod(this, method, name))
+                if (name = selected) {
+                    modes.Check(modeLabel)
+                    checked := true
+                }
+            }
+        }
+        targetMenu.Insert("", label, modes)
+        if checked
+            targetMenu.Check(position "&")
+    }
+
+    static UniqueLabel(label, key, used) {
+        label := StrReplace(label, "&", "&&")
+        if used.Has(label)
+            label .= " · " SubStr(Fnv1a32(key), 1, 6)
+        used[label] := true
+        return label
+    }
+
+    BuildAppInputMenu(exe, excluded, forced) {
+        settings := Menu()
+        excludeLabel := "关闭此应用的自动记忆"
+        forceLabel := "强制保持目标输入法"
+        settings.Add(excludeLabel, ObjBindMethod(this.App, "ToggleAppInputOption", exe, "excludeMemory"))
+        settings.Add(forceLabel, ObjBindMethod(this.App, "ToggleAppInputOption", exe, "force"))
+        if excluded
+            settings.Check(excludeLabel)
+        if forced {
+            settings.Check(forceLabel)
+            target := this.App.Enforcement.Target
+            label := StrReplace("强制目标：" (target.Count ? this.ShortState(target) : "无可用目标"), "&", "&&")
+            if !this.App.Enabled
+                label .= "（自动切换已停用）"
+            settings.Add(label, (*) => 0)
+            settings.Disable(label)
+        }
+        return settings
     }
 
     BuildPunctuationMenu(window) {
@@ -221,26 +311,7 @@ class TrayMenuController {
         this.Refresh(true)
     }
 
-    StateMenuLabel(stateName, namedState) {
-        if (stateName = "english-us")
-            return "英语（美国）- 美式键盘"
-        if (stateName = "wetype-chinese")
-            return "微信输入法（中文）"
-        if (stateName = "wetype-english")
-            return "微信输入法（英文）"
-        profileId := MapGet(namedState, "profile", "unknown")
-        label := this.App.Profiles.DisplayName(profileId)
-        if (label = profileId && MapGet(namedState, "description", "") != "")
-            label := namedState["description"]
-        open := MapGet(namedState, "imeOpen", "unknown")
-        if (open = "1")
-            label .= "（中文）"
-        else if (open = "0")
-            label .= "（英文）"
-        return label
-    }
-
-    SourceLabel(source, rule) {
+    SourceLabel(source, rule, window) {
         if (source = "rule") {
             if (rule.Count && MapGet(rule, "scope", "application") = "window")
                 return "用户规则（当前窗口默认）"
@@ -253,7 +324,7 @@ class TrayMenuController {
         if (source = "default")
             return "全局默认"
         if (source = "observed")
-            return this.App.Config.AutoMemory ? "当前状态（未记忆）" : "自动记忆已关闭"
+            return this.App.CanRemember(window) ? "当前状态（未记忆）" : "自动记忆已关闭"
         return "检测中"
     }
 
@@ -276,13 +347,10 @@ class TrayMenuController {
     ShortState(state) {
         if !state.Count
             return "检测中"
-        name := this.App.Profiles.DisplayName(MapGet(state, "profile", "unknown"))
-        open := MapGet(state, "imeOpen", "unknown")
-        if (open = "1")
-            return name "（中文）"
-        if (open = "0")
-            return name "（英文）"
-        return name
+        profileId := MapGet(state, "profile", "unknown")
+        name := this.App.Profiles.DisplayName(profileId, true)
+        mode := ImeMode.ModeLabel(profileId, MapGet(state, "imeOpen", "unknown"))
+        return mode = "" ? name : name "（" mode "）"
     }
 
     SetState(stateName, *) {

@@ -219,6 +219,19 @@ RunSelfTests(baseDir) {
     reloadedConfig := KeyPersonaConfig(tempConfigDir)
     AssertTest(reloadedConfig.DefaultState = "english-us", "Default state reload", failures)
     AssertTest(!reloadedConfig.AutoMemory, "Automatic memory setting reload", failures)
+    AssertTest(reloadedConfig.SetAppInputOption("Code.exe", "excludeMemory", true)
+        && reloadedConfig.SetAppInputOption("CODE.EXE", "force", true),
+        "Per-app input settings persist both options", failures)
+    reloadedConfig := KeyPersonaConfig(tempConfigDir)
+    AssertTest(reloadedConfig.IsAppMemoryExcluded("Code.exe") && reloadedConfig.IsAppInputForced("code.exe")
+        && !reloadedConfig.IsAppMemoryExcluded("Other.exe") && !reloadedConfig.IsAppInputForced("Other.exe"),
+        "Per-app input settings are case-insensitive and opt-in", failures)
+    AssertTest(reloadedConfig.SetAppInputOption("code.exe", "excludeMemory", false)
+        && !reloadedConfig.IsAppMemoryExcluded("code.exe") && reloadedConfig.IsAppInputForced("code.exe"),
+        "Returning to global memory preserves enforcement", failures)
+    AssertTest(reloadedConfig.SetAppInputOption("code.exe", "force", false)
+        && !reloadedConfig.AppInputPolicies.Has("code.exe"),
+        "Clearing the last input override removes the empty section", failures)
     AssertTest(reloadedConfig.PunctuationEnabled && reloadedConfig.PunctuationPairs["parentheses"]
         && !reloadedConfig.PunctuationConvert["dollar"], "Punctuation global options reload", failures)
     AssertTest(!reloadedConfig.ShouldPairPunctuation("Code.exe", "parentheses")
@@ -269,7 +282,6 @@ RunSelfTests(baseDir) {
     AssertTest(invalidReconcile["defaultChanged"]
         && discoveredCatalog.Has(StrLower(MapGet(reloadedConfig.GetNamedState(reloadedConfig.DefaultState), "profile", ""))),
         "Unavailable global default falls back to a valid state", failures)
-    try DirDelete(tempConfigDir, true)
 
     tempState := A_Temp "\keypersona-state-selftest-" DllCall("kernel32\GetCurrentProcessId", "UInt") ".ini"
     try FileDelete(tempState)
@@ -360,9 +372,14 @@ RunSelfTests(baseDir) {
     AssertTest(terminalRule.Count && terminalRule["stateName"] = "english-us", "User rule matching", failures)
     FileAppend("persistence-rules-ok`n", progressPath, "UTF-8")
 
+    TestInputRestoration(testConfig, testLogger, failures)
+    TestAppInputPolicy(testConfig, testLogger, failures)
     identityApi := WindowIdentity(testConfig, testLogger)
     window := identityApi.Resolve()
-    AssertTest(window.Count > 0, "Foreground window resolution", failures)
+    AssertTest(!identityApi.Resolve(A_ScriptHwnd).Count, "Window resolution ignores its own process", failures)
+    desktop := DllCall("user32\GetShellWindow", "Ptr")
+    if desktop
+        AssertTest(!identityApi.Resolve(desktop).Count, "Window resolution ignores the shell desktop", failures)
     if window.Count {
         AssertTest(identityApi.IsIgnored("explorer.exe", "Shell_SecondaryTrayWnd", window["hwnd"]),
             "Secondary taskbar surface ignored", failures)
@@ -371,7 +388,7 @@ RunSelfTests(baseDir) {
     }
     FileAppend("window-ok`n", progressPath, "UTF-8")
     profileApi := InputProfiles(identityApi, testConfig, testLogger)
-    AssertTest(profileApi.Catalog.Count >= 2, "Enabled profile discovery", failures)
+    AssertTest(profileApi.LastRefreshSucceeded && profileApi.Catalog.Count >= 1, "Windows enabled profile discovery", failures)
     FileAppend("profiles-ok count=" profileApi.Catalog.Count "`n", progressPath, "UTF-8")
     if window.Count {
         state := profileApi.Read(window)
@@ -380,7 +397,11 @@ RunSelfTests(baseDir) {
         imeState := ImeMode(identityApi, testConfig, testLogger).Read(window, MapGet(state, "kind", "unknown"))
         AssertTest(imeState.Has("imeOpen"), "IME mode read path", failures)
         FileAppend("ime-read=" MapGet(imeState, "imeOpen", "") "`n", progressPath, "UTF-8")
+    } else {
+        FileAppend("No recordable foreground window during self-test.`n", progressPath, "UTF-8")
     }
+    try TestInputProfilesAndMenu(profileApi, editableConfig, failures)
+    finally DirDelete(tempConfigDir, true)
     if failures.Length {
         text := "SELF-TEST FAILED (" failures.Length ")`n- " JoinValues(failures, "`n- ") "`n"
         FileAppend(text, progressPath, "UTF-8")
@@ -390,57 +411,75 @@ RunSelfTests(baseDir) {
     return 0
 }
 
-AssertTest(condition, name, failures) {
-    if !condition
-        failures.Push(name)
-}
-
-class ImeModeNoOpProbe extends ImeMode {
-    __New() {
-        this.SetCalls := 0
+TestInputProfilesAndMenu(profiles, config, failures) {
+    legacyId := "0804:E0200804"
+    usId := "0409:00000409"
+    japaneseId := "0411:{03B5835F-F03C-411B-9CE2-AA23E1171E36}{A76C93D9-5523-4E90-AAFA-4DB112F9AC76}"
+    tipId := "0804:{86598FB9-66A2-463E-B9C2-AEB906D477AD}{607FDF85-FCC8-4DBD-A365-41296F980C9C}"
+    rowSize := InputProfiles.ENABLED_PROFILE_SIZE
+    profileBytes := Buffer(rowSize * 4, 0)
+    category := GuidBuffer(InputProfiles.CATEGORY_KEYBOARD)
+    for index, id in [usId, legacyId, japaneseId, tipId] {
+        offset := (index - 1) * rowSize
+        NumPut("UInt", index < 3 ? 2 : 1, profileBytes, offset)
+        if (index >= 3)
+            DllCall("ntdll\RtlMoveMemory", "Ptr", profileBytes.Ptr + offset + 40, "Ptr", category, "UPtr", 16)
+        if (index = 4)
+            NumPut("UInt", 0x2, profileBytes, offset + 60)
+        NumPut("UShort", Integer("0x" SubStr(id, 1, 4)), profileBytes, offset + 4)
+        StrPut(index = 2 ? SubStr(id, 6) : id, profileBytes.Ptr + offset + 64, 260, "UTF-16")
     }
+    catalog := profiles.ParseEnabledProfiles(profileBytes, 4)
+    AssertTest(catalog.Count = 3 && !catalog.Has(StrLower(tipId))
+        && catalog[StrLower(legacyId)]["kind"] = "ime", "Discovery includes legacy IMEs and skips disabled TIPs", failures)
+    profiles.SetCatalog(catalog)
+    profiles.Manager := ""
+    AssertTest(profiles.ResolveProfileForLanguage(0x0804, 0xE0200804)["id"] = legacyId
+        && !profiles.ResolveProfileForLanguage(0x0804, 0xE0210804).Count,
+        "Legacy IMEs require a matching layout handle", failures)
+    AssertTest(profiles.ResolveProfileForLanguage(0x0409, 0x04090409)["id"] = usId
+        && !profiles.ResolveProfileForLanguage(0x0409, 0xF0020409).Count,
+        "Keyboard variants are distinguished from the default layout", failures)
+    japaneseKey := "HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\CTF\TIP\{03B5835F-F03C-411B-9CE2-AA23E1171E36}"
+        . "\LanguageProfile\0x00000411\{A76C93D9-5523-4E90-AAFA-4DB112F9AC76}"
+    systemJapanese := profiles.ReadResourceName(RegRead(japaneseKey, "Display Description", ""))
+    AssertTest((systemJapanese = "" || profiles.DisplayName(japaneseId) = systemJapanese)
+        && !profiles.ResolveProfileForLanguage(0x0411, 0xE0210411).Count,
+        "Japanese IME uses the localized system name and does not match unrelated legacy layouts", failures)
+    ; Same system name in two language columns must create two distinct items.
+    catalog[StrLower(legacyId)]["description"] := profiles.DisplayName(japaneseId)
+    profiles.ByLanguage["0804"].Push(profiles.ParseProfile(tipId),
+        profiles.ParseProfile("0804:{11111111-1111-1111-1111-111111111111}{22222222-2222-2222-2222-222222222222}"))
+    AssertTest(!profiles.ResolveProfileForLanguage(0x0804, 0x08040804).Count
+        && profiles.ResolveProfileForLanguage(0x0804, 0xE0200804)["id"] = legacyId,
+        "Chinese TIPs are not guessed while an exact legacy IME is recognized", failures)
 
-    GetImeWindow(windowInfo) {
-        return 1
-    }
-
-    Control(imeWindow, command, value) {
-        if (command = ImeMode.IMC_SETOPENSTATUS
-            || command = ImeMode.IMC_SETCONVERSIONMODE
-            || command = ImeMode.IMC_SETSENTENCEMODE) {
-            this.SetCalls += 1
-            return Map("ok", true, "value", value, "error", 0)
-        }
-        current := command = ImeMode.IMC_GETOPENSTATUS ? 1
-            : command = ImeMode.IMC_GETCONVERSIONMODE ? 0x1
-            : command = ImeMode.IMC_GETSENTENCEMODE ? 0x8 : 0
-        return Map("ok", true, "value", current, "error", 0)
-    }
-}
-
-TestProjectIconPaint(button, iconSize) {
-    bounds := Buffer(16, 0)
-    DllCall("user32\GetClientRect", "Ptr", button.Hwnd, "Ptr", bounds)
-    width := NumGet(bounds, 8, "Int")
-    height := NumGet(bounds, 12, "Int")
-    screen := DllCall("user32\GetDC", "Ptr", 0, "Ptr")
-    bitmap := DllCall("gdi32\CreateCompatibleBitmap", "Ptr", screen, "Int", width, "Int", height, "Ptr")
-    target := DllCall("gdi32\CreateCompatibleDC", "Ptr", screen, "Ptr")
-    DllCall("user32\ReleaseDC", "Ptr", 0, "Ptr", screen)
-    previous := DllCall("gdi32\SelectObject", "Ptr", target, "Ptr", bitmap, "Ptr")
-    try {
-        Sleep(20)
-        SendMessage(0x318, target, 0xC, button) ; WM_PRINTCLIENT, PRF_CLIENT | PRF_ERASEBKGND
-        top := DllCall("gdi32\GetPixel", "Ptr", target, "Int", width // 2, "Int", 0, "UInt")
-        edge := DllCall("gdi32\GetPixel", "Ptr", target, "Int", 0, "Int", height // 2, "UInt")
-        glyph := DllCall("gdi32\GetPixel", "Ptr", target, "Int", (width - iconSize) // 2 + 2,
-            "Int", height // 2, "UInt")
-        return top = 0xFAF7F5 && edge = top && glyph < 0x777777
-    } finally {
-        DllCall("gdi32\SelectObject", "Ptr", target, "Ptr", previous)
-        DllCall("gdi32\DeleteDC", "Ptr", target)
-        DllCall("gdi32\DeleteObject", "Ptr", bitmap)
-    }
+    config.Reload()
+    selection := config.DefaultState
+    added := config.ReconcileDiscoveredStates(catalog, false)
+    AssertTest(added["added"] = 6 && !added["authoritative"] && config.DefaultState = selection
+        && config.NamedStates.Has("wetype-chinese"), "Partial discovery adds choices without deleting existing settings", failures)
+    config.ReconcileDiscoveredStates(catalog)
+    selectedName := "auto-" StrLower(Fnv1a32(StrLower(legacyId))) "-english"
+    tray := TrayMenuController({Profiles: profiles, Config: config})
+    choices := Menu()
+    try tray.AddInputChoices(choices, selectedName, "SetState")
+    finally tray.Dispose()
+    usMenu := DllCall("user32\GetSubMenu", "Ptr", choices.Handle, "Int", 1, "Ptr")
+    japaneseMenu := DllCall("user32\GetSubMenu", "Ptr", choices.Handle, "Int", 3, "Ptr")
+    wubiMenu := DllCall("user32\GetSubMenu", "Ptr", choices.Handle, "Int", 5, "Ptr")
+    japaneseHeading := DllCall("user32\GetMenuState", "Ptr", choices.Handle, "UInt", 2, "UInt", 0x400, "UInt")
+    chineseHeading := DllCall("user32\GetMenuState", "Ptr", choices.Handle, "UInt", 4, "UInt", 0x400, "UInt")
+    AssertTest(!usMenu && wubiMenu && japaneseMenu
+        && (japaneseHeading & 0x23) = 0x23 && (chineseHeading & 0x23) = 0x23
+        && DllCall("user32\GetMenuItemCount", "Ptr", wubiMenu, "Int") = 3
+        && (DllCall("user32\GetMenuState", "Ptr", choices.Handle, "UInt", 5, "UInt", 0x400, "UInt") & 0x8)
+        && !(DllCall("user32\GetMenuState", "Ptr", choices.Handle, "UInt", 3, "UInt", 0x400, "UInt") & 0x8)
+        && (DllCall("user32\GetMenuState", "Ptr", wubiMenu, "UInt", 1, "UInt", 0x400, "UInt") & 0x8),
+        "Tray uses native language columns and checks only the selected input source and mode", failures)
+    AssertTest(InputRestoration.HasKnownModeMismatch(Map("kind", "ime", "imeOpen", "1"), Map("imeOpen", "0"))
+        && !InputRestoration.HasKnownModeMismatch(Map("kind", "ime", "imeOpen", "unknown"), Map("imeOpen", "0")),
+        "Legacy mode restoration writes only known differences", failures)
 }
 
 TestInputRestoration(config, logger, failures) {
@@ -554,6 +593,118 @@ TestInputRestoration(config, logger, failures) {
     }
 }
 
+AssertTest(condition, name, failures) {
+    if !condition
+        failures.Push(name)
+}
+
+TestProjectIconPaint(button, iconSize) {
+    bounds := Buffer(16, 0)
+    DllCall("user32\GetClientRect", "Ptr", button.Hwnd, "Ptr", bounds)
+    width := NumGet(bounds, 8, "Int")
+    height := NumGet(bounds, 12, "Int")
+    screen := DllCall("user32\GetDC", "Ptr", 0, "Ptr")
+    bitmap := DllCall("gdi32\CreateCompatibleBitmap", "Ptr", screen, "Int", width, "Int", height, "Ptr")
+    target := DllCall("gdi32\CreateCompatibleDC", "Ptr", screen, "Ptr")
+    DllCall("user32\ReleaseDC", "Ptr", 0, "Ptr", screen)
+    previous := DllCall("gdi32\SelectObject", "Ptr", target, "Ptr", bitmap, "Ptr")
+    try {
+        Sleep(20)
+        SendMessage(0x318, target, 0xC, button) ; WM_PRINTCLIENT, PRF_CLIENT | PRF_ERASEBKGND
+        top := DllCall("gdi32\GetPixel", "Ptr", target, "Int", width // 2, "Int", 0, "UInt")
+        edge := DllCall("gdi32\GetPixel", "Ptr", target, "Int", 0, "Int", height // 2, "UInt")
+        glyph := DllCall("gdi32\GetPixel", "Ptr", target, "Int", (width - iconSize) // 2 + 2,
+            "Int", height // 2, "UInt")
+        return top = 0xFAF7F5 && edge = top && glyph < 0x777777
+    } finally {
+        DllCall("gdi32\SelectObject", "Ptr", target, "Ptr", previous)
+        DllCall("gdi32\DeleteDC", "Ptr", target)
+        DllCall("gdi32\DeleteObject", "Ptr", bitmap)
+    }
+}
+
+TestAppInputPolicy(config, logger, failures) {
+    originalAutoMemory := config.AutoMemory
+    originalPolicies := config.AppInputPolicies
+    config.AppInputPolicies := Map("probe.exe", Map("excludeMemory", true, "force", true))
+    config.AutoMemory := true
+    try {
+        actual := Map("profile", "0804:probe", "kind", "tip", "imeOpen", "1", "focusHwnd", 101)
+        remembered := Map("profile", "0409:00000409", "kind", "keyboard", "source", "learned")
+        rule := Map("state", Map("profile", "0411:00000411"))
+        app := InputRestorationProbe(config, logger, actual)
+        app.Saved := remembered
+        app.SessionStates["100"] := remembered
+        desired := app.SelectDesiredState(app.CurrentWindow, rule)
+        AssertTest(!app.CanRemember(app.CurrentWindow) && desired["profile"] = "0411:00000411"
+            && !app.StoreReads && app.Saved = remembered,
+            "An excluded app skips automatic memory reads and uses its rule", failures)
+        AssertTest(!app.SelectDesiredState(app.CurrentWindow, Map()).Count,
+            "An excluded app without a rule has no automatic target", failures)
+
+        config.AppInputPolicies["probe.exe"]["excludeMemory"] := false
+        desired := app.SelectDesiredState(app.CurrentWindow, rule)
+        app.SetEnforcedTarget(app.CurrentWindow, desired)
+        AssertTest(app.Enforcement.Target["profile"] = remembered["profile"],
+            "Enforcement picks the remembered input for an app that still uses memory", failures)
+        app.ObserveCurrentWindow()
+        AssertTest(app.LayoutRequests = 1 && app.Saved = remembered && app.Restore.Pending.reason = "enforce",
+            "Observed drift is corrected and does not replace the saved preference", failures)
+        app.ExpireRestoreCheck()
+        app.ObserveCurrentWindow()
+        AssertTest(!app.Restore.Pending && app.LayoutRequests = 1 && app.Enforcement.Failures = 1,
+            "A refused forced correction enters backoff without another request", failures)
+
+        app.Actual := StateClone(remembered)
+        app.Actual["focusHwnd"] := 101
+        app.ObserveCurrentWindow()
+        AssertTest(!app.Enforcement.Failures && app.LayoutRequests = 1,
+            "A matched target clears backoff without writing", failures)
+        app.Actual := actual
+        config.AutoMemory := false
+        desired := app.SelectDesiredState(app.CurrentWindow, rule)
+        app.SetEnforcedTarget(app.CurrentWindow, desired)
+        app.ObserveCurrentWindow()
+        AssertTest(app.LayoutRequests = 2 && app.Enforcement.Target["profile"] = "0411:00000411",
+            "An explicit rule can be forced even with global memory off", failures)
+        app.Restore.Cancel()
+
+        app.Enforcement.SetTarget("probe.exe", actual)
+        AssertTest(!app.Enforcement.ShouldRestore(Map("profile", "0804:unknown"), 1000)
+            && !app.Enforcement.ShouldRestore(Map("profile", "0804:probe", "kind", "tip"), 1000)
+            && !app.Enforcement.ShouldRestore(Map("profile", "0804:probe", "kind", "tip",
+                "imeOpen", "1", "conversion", "0x8"), 1000)
+            && app.Enforcement.ShouldRestore(Map("profile", "0804:probe", "kind", "tip", "imeOpen", "0"), 1000),
+            "Force mode acts on known source and open-mode differences only", failures)
+    } finally {
+        config.AutoMemory := originalAutoMemory
+        config.AppInputPolicies := originalPolicies
+    }
+}
+
+class ImeModeNoOpProbe extends ImeMode {
+    __New() {
+        this.SetCalls := 0
+    }
+
+    GetImeWindow(windowInfo, focus := unset) {
+        return 1
+    }
+
+    Control(imeWindow, command, value) {
+        if (command = ImeMode.IMC_SETOPENSTATUS
+            || command = ImeMode.IMC_SETCONVERSIONMODE
+            || command = ImeMode.IMC_SETSENTENCEMODE) {
+            this.SetCalls += 1
+            return Map("ok", true, "value", value, "error", 0)
+        }
+        current := command = ImeMode.IMC_GETOPENSTATUS ? 1
+            : command = ImeMode.IMC_GETCONVERSIONMODE ? 0x1
+            : command = ImeMode.IMC_GETSENTENCEMODE ? 0x8 : 0
+        return Map("ok", true, "value", current, "error", 0)
+    }
+}
+
 class InputRestorationProbe extends KeyPersonaApp {
     __New(config, logger, actual) {
         this.Config := config
@@ -631,64 +782,5 @@ class InputRestorationProbe extends KeyPersonaApp {
 
 class InputRestorationClockProbe extends InputRestoration {
     ScheduleCheck(delay) {
-    }
-}
-
-TestAppInputPolicy(config, logger, failures) {
-    originalAutoMemory := config.AutoMemory
-    originalPolicies := config.AppInputPolicies
-    config.AppInputPolicies := Map("probe.exe", Map("excludeMemory", true, "force", true))
-    config.AutoMemory := true
-    try {
-        actual := Map("profile", "0804:probe", "kind", "tip", "imeOpen", "1", "focusHwnd", 101)
-        remembered := Map("profile", "0409:00000409", "kind", "keyboard", "source", "learned")
-        rule := Map("state", Map("profile", "0411:00000411"))
-        app := InputRestorationProbe(config, logger, actual)
-        app.Saved := remembered
-        app.SessionStates["100"] := remembered
-        desired := app.SelectDesiredState(app.CurrentWindow, rule)
-        AssertTest(!app.CanRemember(app.CurrentWindow) && desired["profile"] = "0411:00000411"
-            && !app.StoreReads && app.Saved = remembered,
-            "An excluded app skips automatic memory reads and uses its rule", failures)
-        AssertTest(!app.SelectDesiredState(app.CurrentWindow, Map()).Count,
-            "An excluded app without a rule has no automatic target", failures)
-
-        config.AppInputPolicies["probe.exe"]["excludeMemory"] := false
-        desired := app.SelectDesiredState(app.CurrentWindow, rule)
-        app.SetEnforcedTarget(app.CurrentWindow, desired)
-        AssertTest(app.Enforcement.Target["profile"] = remembered["profile"],
-            "Enforcement picks the remembered input for an app that still uses memory", failures)
-        app.ObserveCurrentWindow()
-        AssertTest(app.LayoutRequests = 1 && app.Saved = remembered && app.Restore.Pending.reason = "enforce",
-            "Observed drift is corrected and does not replace the saved preference", failures)
-        app.ExpireRestoreCheck()
-        app.ObserveCurrentWindow()
-        AssertTest(!app.Restore.Pending && app.LayoutRequests = 1 && app.Enforcement.Failures = 1,
-            "A refused forced correction enters backoff without another request", failures)
-
-        app.Actual := StateClone(remembered)
-        app.Actual["focusHwnd"] := 101
-        app.ObserveCurrentWindow()
-        AssertTest(!app.Enforcement.Failures && app.LayoutRequests = 1,
-            "A matched target clears backoff without writing", failures)
-        app.Actual := actual
-        config.AutoMemory := false
-        desired := app.SelectDesiredState(app.CurrentWindow, rule)
-        app.SetEnforcedTarget(app.CurrentWindow, desired)
-        app.ObserveCurrentWindow()
-        AssertTest(app.LayoutRequests = 2 && app.Enforcement.Target["profile"] = "0411:00000411",
-            "An explicit rule can be forced even with global memory off", failures)
-        app.Restore.Cancel()
-
-        app.Enforcement.SetTarget("probe.exe", actual)
-        AssertTest(!app.Enforcement.ShouldRestore(Map("profile", "0804:unknown"), 1000)
-            && !app.Enforcement.ShouldRestore(Map("profile", "0804:probe", "kind", "tip"), 1000)
-            && !app.Enforcement.ShouldRestore(Map("profile", "0804:probe", "kind", "tip",
-                "imeOpen", "1", "conversion", "0x8"), 1000)
-            && app.Enforcement.ShouldRestore(Map("profile", "0804:probe", "kind", "tip", "imeOpen", "0"), 1000),
-            "Force mode acts on known source and open-mode differences only", failures)
-    } finally {
-        config.AutoMemory := originalAutoMemory
-        config.AppInputPolicies := originalPolicies
     }
 }
