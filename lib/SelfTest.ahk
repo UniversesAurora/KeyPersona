@@ -101,6 +101,22 @@ RunSelfTests(baseDir) {
     testLogger := Logger(testConfig.LogPath, "off")
     startupApi := StartupManager(testLogger)
     AssertTest(InStr(startupApi.CommandLine(), "--startup") > 0, "Startup command generation", failures)
+    adminCommand := ElevationManager.RestartCommand("a folder\interpreter.exe", "a folder\source.ahk", 42,
+        "S-1-5-21-0", true)
+    AssertTest(InStr(adminCommand, '"' "a folder\interpreter.exe" '"' " /force " '"' "a folder\source.ahk" '"')
+        && InStr(adminCommand, "--admin-parent=42") && InStr(adminCommand, "--enable-admin"),
+        "Administrator handoff quotes executable and script paths", failures)
+    try scheduler := startupApi.OpenScheduler()
+    catch
+        scheduler := 0
+    if scheduler {
+        definition := startupApi.MakeTaskDefinition(scheduler)
+        AssertTest(startupApi.TaskUsesCurrentAccount(definition) && definition.Principal.RunLevel = 1
+            && definition.Principal.LogonType = 3
+            && definition.Triggers.Item(1).Type = 9 && definition.Actions.Item(1).Path = startupApi.TargetPath()
+            && definition.Actions.Item(1).Arguments = startupApi.Arguments(),
+            "Administrator startup definition uses current-user elevated interactive logon", failures)
+    }
     AssertTest(SubStr(startupApi.ShortcutPath(), -StrLen(StartupManager.ShortcutName)) = StartupManager.ShortcutName,
         "Startup shortcut path generation", failures)
 

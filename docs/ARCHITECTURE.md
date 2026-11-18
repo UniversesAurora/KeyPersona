@@ -221,7 +221,7 @@ Windows 没有一个文档化广播能同时覆盖 Win+Space、语言栏点击�
 
 ## 10. 自启动和旧版本迁移
 
-自启动使用当前用户标准 Startup 文件夹中的 `KeyPersona.lnk`，不需要管理员权限。
+普通权限自启动使用当前用户 Startup 文件夹中的 `KeyPersona.lnk`。开启 `[general] runAsAdmin=1` 且启用自启动时，使用 Task Scheduler 的当前用户登录触发器、交互式用户令牌和最高运行级别。程序手动打开时用 Windows RunAs 请求同一账户授权，已有普通权限实例在确认子进程属于同一账户后退出，由子进程接管锁和配置。
 
 编译版快捷方式保存：
 
@@ -298,6 +298,7 @@ KeyPersona/
 │  ├─ Rules.ahk
 │  ├─ StateStore.ahk
 │  ├─ StartupManager.ahk
+│  ├─ ElevationManager.ahk
 │  ├─ TrayMenu.ahk
 │  ├─ AboutDialog.ahk
 │  ├─ Punctuation.ahk
@@ -329,7 +330,7 @@ KeyPersona/
 ## 14. 已知边界
 
 - 第三方 IME 若不能可靠读写内部模式，只恢复完整 profile。
-- 普通权限进程受 UIPI 限制，可能无法向管理员权限窗口发送输入法消息；不建议为此让 KeyPersona 长期以管理员权限运行。
+- 普通权限进程受 UIPI 限制，可能无法向管理员权限窗口发送输入法消息。可在托盘启用始终以管理员身份运行，实际切换仍取决于目标应用和输入法。
 - UAC 安全桌面、登录界面和密码安全控件不参与记忆。
 - 同标题浏览器窗口跨重启时无法可靠区分。
 - 用户配置按设计放在程序目录；只读目录、尚未挂载的网络盘或登录时未就绪的移动盘会影响保存和自启动。

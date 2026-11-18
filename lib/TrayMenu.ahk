@@ -47,6 +47,10 @@ class TrayMenuController {
         tray.Add("开机自启动", ObjBindMethod(this.App, "ToggleStartup"))
         if this.App.Startup.IsEnabled()
             tray.Check("开机自启动")
+        adminLabel := "始终以管理员身份运行" (A_IsAdmin ? "（当前已提权）" : "")
+        tray.Add(adminLabel, ObjBindMethod(this.App, "ToggleRunAsAdmin"))
+        if this.App.Config.RunAsAdmin
+            tray.Check(adminLabel)
         tray.Add()
         if window.Count {
             status := StrReplace("当前窗口：" MapGet(window, "exe", "未知") " · " this.ShortState(state), "&", "&&")

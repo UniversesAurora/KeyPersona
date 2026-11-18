@@ -18,6 +18,7 @@ class KeyPersonaApp {
         this.SyncedProfileRevision := this.Profiles.Revision
         this.LogCatalogResult(catalogResult)
         this.Mode := ImeMode(this.Identity, this.Config, this.Logger)
+        this.Startup := StartupManager(this.Logger, this.Config.RunAsAdmin)
         this.Rules := RuleEngine(this.Config, this.Logger)
         this.Store := StateStore(this.Config.StatePath, this.Logger)
         removedRecords := catalogResult["authoritative"]
@@ -62,9 +63,11 @@ class KeyPersonaApp {
     }
 
     Start() {
-        try this.Startup.MigrateLegacy()
-        catch Error as migrationError
-            this.Logger.Error("Startup migration failed: " migrationError.Message)
+        if !this.ObserveOnly {
+            try this.Startup.MigrateLegacy()
+            catch Error as migrationError
+                this.Logger.Error("Startup migration failed: " migrationError.Message)
+        }
         OnMessage(KeyPersonaApp.EVENT_MESSAGE, this.MessageCallback)
         if !this.Hook.Start()
             this.Logger.Warn("Control focus events unavailable; using foreground events and timed checks")
@@ -737,12 +740,16 @@ class KeyPersonaApp {
         this.Tray.Refresh(true)
     }
 
-    SetDefaultState(stateName) {
-        if !this.Config.SetDefaultState(stateName)
+    ApplyAdminPreference(enabled) {
+        previous := this.Config.RunAsAdmin
+        if previous = enabled
             return
-        this.Logger.Info("Default state changed to " stateName)
-        TrayTip("全局默认输入法已设置为 " stateName "。`n仅用于尚未记录的窗口。", AppInfo.Name, "Mute")
-        this.Tray.Refresh(true)
+        this.Startup.ChangeAdminMode(enabled)
+        try this.Config.SetRunAsAdmin(enabled)
+        catch Error as failure {
+            try this.Startup.ChangeAdminMode(previous)
+            throw failure
+        }
     }
 
     ToggleStartup(*) {
@@ -753,7 +760,6 @@ class KeyPersonaApp {
             this.Logger.Error("Startup toggle failed: " toggleFailure.Message)
             TrayTip("无法修改开机自启动：" toggleFailure.Message, AppInfo.Name, "Iconx")
         }
-        this.Tray.Refresh(true)
     }
 
     ClearCurrentRecord(*) {

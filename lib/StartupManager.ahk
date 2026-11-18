@@ -5,8 +5,10 @@ class StartupManager {
     static ValueName := AppInfo.StartupValueName
     static ShortcutName := AppInfo.StartupShortcutName
 
-    __New(logger) {
+    __New(logger, adminMode := false) {
         this.Logger := logger
+        this.AdminMode := adminMode
+        this.Sid := ""
     }
 
     ShortcutPath() {
@@ -31,6 +33,10 @@ class StartupManager {
     }
 
     IsEnabled() {
+        return this.AdminMode ? this.IsTaskEnabled() : this.IsShortcutEnabled()
+    }
+
+    IsShortcutEnabled() {
         shortcut := this.ShortcutPath()
         if !FileExist(shortcut)
             return false
@@ -41,10 +47,6 @@ class StartupManager {
                 && StrLower(Trim(workingDirectory)) = StrLower(Trim(this.WorkingDirectory()))
         }
         return false
-    }
-
-    IsRegistered() {
-        return FileExist(this.ShortcutPath()) || this.HasLegacyRegistration()
     }
 
     LegacyCommand() {
@@ -68,7 +70,151 @@ class StartupManager {
         return false
     }
 
+    GetSid() {
+        if this.Sid = ""
+            this.Sid := ElevationManager.AccountSid()
+        return this.Sid
+    }
+
+    TaskName() {
+        return AppInfo.Name "-" this.GetSid()
+    }
+
+    OpenScheduler() {
+        scheduler := ComObject("Schedule.Service")
+        scheduler.Connect()
+        return scheduler
+    }
+
+    GetElevatedTask(folder := unset) {
+        if !IsSet(folder) {
+            scheduler := this.OpenScheduler()
+            folder := scheduler.GetFolder("\")
+        }
+        try return folder.GetTask(this.TaskName())
+        catch Error as failure {
+            if !StartupManager.IsMissingTask(failure)
+                throw failure
+            return 0
+        }
+    }
+
+    static IsMissingTask(failure) {
+        return (failure is OSError && (failure.Number & 0xFFFFFFFF) = 0x80070002)
+            || RegExMatch(failure.Message, "i)^\(0x80070002\)")
+    }
+
+    TaskUsesCurrentAccount(definition) {
+        sid := this.GetSid()
+        return ElevationManager.ResolveAccountSid(definition.Principal.UserId) = sid
+            && ElevationManager.ResolveAccountSid(definition.Triggers.Item(1).UserId) = sid
+    }
+
+    IsTaskEnabled(task := unset) {
+        try {
+            if !IsSet(task)
+                task := this.GetElevatedTask()
+            if !task || !task.Enabled
+                return false
+            definition := task.Definition
+            if definition.Actions.Count != 1 || definition.Triggers.Count != 1
+                return false
+            action := definition.Actions.Item(1)
+            trigger := definition.Triggers.Item(1)
+            return definition.Principal.RunLevel = 1 && definition.Principal.LogonType = 3
+                && this.TaskUsesCurrentAccount(definition)
+                && trigger.Type = 9 && trigger.Enabled && action.Type = 0
+                && StrLower(action.Path) = StrLower(this.TargetPath())
+                && StrLower(action.Arguments) = StrLower(this.Arguments())
+                && StrLower(action.WorkingDirectory) = StrLower(this.WorkingDirectory())
+        }
+        return false
+    }
+
+    MakeTaskDefinition(scheduler) {
+        definition := scheduler.NewTask(0)
+        sid := this.GetSid()
+        definition.RegistrationInfo.Description := AppInfo.Name " (current-user logon)"
+        definition.Principal.UserId := sid
+        definition.Principal.LogonType := 3 ; TASK_LOGON_INTERACTIVE_TOKEN
+        definition.Principal.RunLevel := 1 ; TASK_RUNLEVEL_HIGHEST
+        definition.Settings.Enabled := true
+        definition.Settings.DisallowStartIfOnBatteries := false
+        definition.Settings.StopIfGoingOnBatteries := false
+        definition.Settings.ExecutionTimeLimit := "PT0S"
+        definition.Settings.MultipleInstances := 2 ; TASK_INSTANCES_IGNORE_NEW
+        trigger := definition.Triggers.Create(9) ; TASK_TRIGGER_LOGON
+        trigger.UserId := sid
+        action := definition.Actions.Create(0) ; TASK_ACTION_EXEC
+        action.Path := this.TargetPath()
+        action.Arguments := this.Arguments()
+        action.WorkingDirectory := this.WorkingDirectory()
+        return definition
+    }
+
+    EnableElevatedTask() {
+        scheduler := this.OpenScheduler()
+        folder := scheduler.GetFolder("\")
+        task := folder.RegisterTaskDefinition(this.TaskName(), this.MakeTaskDefinition(scheduler),
+            6, this.GetSid(), ComValue(0, 0), 3)
+        if !this.IsTaskEnabled(task) {
+            try folder.DeleteTask(this.TaskName(), 0)
+            throw Error("Windows 计划任务校验失败。")
+        }
+        try this.RemoveShortcut()
+        catch Error as failure {
+            try folder.DeleteTask(this.TaskName(), 0)
+            throw failure
+        }
+    }
+
+    RemoveElevatedTask() {
+        scheduler := this.OpenScheduler()
+        folder := scheduler.GetFolder("\")
+        if this.GetElevatedTask(folder)
+            folder.DeleteTask(this.TaskName(), 0)
+    }
+
+    RemoveShortcut() {
+        shortcut := this.ShortcutPath()
+        if FileExist(shortcut)
+            FileDelete(shortcut)
+    }
+
+    ChangeAdminMode(enabled) {
+        previous := this.AdminMode
+        if previous = enabled
+            return
+        hadStartup := this.IsShortcutEnabled() || this.IsTaskEnabled() || this.HasLegacyRegistration()
+        this.AdminMode := enabled
+        try {
+            if hadStartup
+                this.Enable()
+        } catch Error as failure {
+            this.AdminMode := previous
+            throw failure
+        }
+    }
+
     Enable() {
+        if this.AdminMode
+            this.EnableElevatedTask()
+        else
+            this.EnableShortcut()
+        this.RemoveLegacyRegistrations()
+        if this.HasLegacyRegistration() {
+            if this.AdminMode {
+                try this.RemoveElevatedTask()
+            } else {
+                try this.RemoveShortcut()
+            }
+            throw Error("旧自启动入口无法移除。")
+        }
+        this.Logger.Info("Startup enabled" (this.AdminMode ? " via elevated logon task" : " via Startup folder"))
+        return true
+    }
+
+    EnableShortcut() {
         shortcut := this.ShortcutPath()
         icon := A_IsCompiled ? A_ScriptFullPath : A_ScriptDir "\" AppInfo.IconFile
         FileCreateShortcut(
@@ -79,31 +225,39 @@ class StartupManager {
             AppInfo.Name,
             icon
         )
-        if !this.IsEnabled() {
+        if !this.IsShortcutEnabled() {
             try FileDelete(shortcut)
-            throw Error("Windows startup shortcut could not be verified")
+            throw Error("Windows 自启动快捷方式校验失败。")
         }
-        this.RemoveLegacyRegistrations()
-        if this.HasLegacyRegistration() {
-            try FileDelete(shortcut)
-            throw Error("Legacy startup registration could not be removed")
+        if A_IsAdmin {
+            try this.RemoveElevatedTask()
+            catch Error as failure {
+                try this.RemoveShortcut()
+                throw failure
+            }
         }
-        this.Logger.Info("Startup enabled with the current-user Startup folder")
-        return true
     }
 
     Disable() {
-        shortcut := this.ShortcutPath()
-        if FileExist(shortcut)
-            FileDelete(shortcut)
+        if this.AdminMode || A_IsAdmin
+            this.RemoveElevatedTask()
+        this.RemoveShortcut()
         this.RemoveLegacyRegistrations()
-        if this.IsRegistered()
+        if FileExist(this.ShortcutPath()) || this.HasLegacyRegistration()
             throw Error("Windows startup registration could not be removed")
         this.Logger.Info("Startup disabled")
         return false
     }
 
     MigrateLegacy() {
+        if this.AdminMode && !this.IsTaskEnabled() && this.IsShortcutEnabled() {
+            this.Enable()
+            return true
+        }
+        if !this.AdminMode && A_IsAdmin && this.IsTaskEnabled() {
+            this.Enable()
+            return true
+        }
         if !A_IsCompiled || !this.HasLegacyRegistration()
             return false
         if this.IsEnabled() {

@@ -16,6 +16,7 @@ class KeyPersonaConfig {
         if !this.ReadOnly
             this.MigratePunctuationSettings()
         this.Enabled := ParseBool(this.Doc.Get("general", "enabled", "1"), true)
+        this.RunAsAdmin := ParseBool(this.Doc.Get("general", "runAsAdmin", "0"))
         this.AutoMemory := ParseBool(this.Doc.Get("general", "autoMemory", "1"), true)
         this.DefaultState := this.Doc.Get("general", "defaultState", "wetype-chinese")
         this.ForegroundSettleMs := ParseInt(this.Doc.Get("general", "foregroundSettleMs", "80"), 80, 20, 500)
@@ -317,6 +318,11 @@ class KeyPersonaConfig {
         return this.AutoMemory
     }
 
+    SetRunAsAdmin(enabled) {
+        this.WriteChanges([["general", "runAsAdmin", enabled ? "1" : "0"]])
+        this.RunAsAdmin := !!enabled
+    }
+
     LoadAppInputPolicies() {
         policies := Map()
         for section, values in this.Doc.Sections {
@@ -540,6 +546,7 @@ class KeyPersonaConfig {
             . "[general]`n"
             . "enabled=1`n"
             . "autoMemory=1`n"
+            . "runAsAdmin=0`n"
             . "defaultState=wetype-chinese`n"
             . "foregroundSettleMs=80`n"
             . "activePollMs=250`n"

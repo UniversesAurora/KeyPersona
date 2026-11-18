@@ -1,5 +1,5 @@
 #Requires AutoHotkey v2.0
-#SingleInstance Force
+#SingleInstance Off
 #Warn All, StdOut
 Persistent
 
@@ -7,6 +7,7 @@ Persistent
 #Include lib\LegacyMigration.ahk
 #Include lib\Utils.ahk
 #Include lib\Config.ahk
+#Include lib\ElevationManager.ahk
 #Include lib\StartupManager.ahk
 #Include lib\AboutDialog.ahk
 #Include lib\StateStore.ahk
@@ -37,6 +38,29 @@ if observeOnly
 smokeSeconds := ArgumentValue("--smoke-seconds=", 0)
 appBaseDir := RuntimeBaseDir()
 try {
+    if !observeOnly {
+        parentPid := ParseInt(ArgumentText("--admin-parent="), 0, 0)
+        if parentPid
+            ElevationManager.WaitForHandoff(parentPid, ArgumentText("--admin-owner="))
+        if !AcquireRuntimeLock(appBaseDir)
+            ExitApp()
+        if !A_IsAdmin {
+            launchConfig := IniDocument.Load(appBaseDir "\" AppInfo.ConfigFile)
+            if ParseBool(launchConfig.Get("general", "runAsAdmin", "0")) {
+                ElevationManager.RequestRestart(appBaseDir)
+                ExitApp()
+            }
+        }
+    }
+    global KEYPERSONA_APP := KeyPersonaApp(appBaseDir, observeOnly)
+    OnExit(ObjBindMethod(KEYPERSONA_APP, "Shutdown"))
+    if !observeOnly && A_IsAdmin && parentPid && HasArgument("--enable-admin") {
+        try KEYPERSONA_APP.ApplyAdminPreference(true)
+        catch Error as adminSetupError {
+            KEYPERSONA_APP.Logger.Error("Could not save administrator preference: " adminSetupError.Message)
+            TrayTip("本次以管理员身份运行。未能保存设置。" adminSetupError.Message, AppInfo.Name, "Iconx")
+        }
+    }
     KEYPERSONA_APP.Start()
     if (smokeSeconds > 0)
         SetTimer((*) => ExitApp(), -smokeSeconds * 1000)
@@ -76,12 +100,16 @@ HasArgument(expected) {
     return false
 }
 
-ArgumentValue(prefix, defaultValue) {
+ArgumentText(prefix) {
     for arg in A_Args {
         if (SubStr(arg, 1, StrLen(prefix)) = prefix)
-            return ParseInt(SubStr(arg, StrLen(prefix) + 1), defaultValue, 0, 3600)
+            return SubStr(arg, StrLen(prefix) + 1)
     }
-    return defaultValue
+    return ""
+}
+
+ArgumentValue(prefix, defaultValue) {
+    return ParseInt(ArgumentText(prefix), defaultValue, 0, 3600)
 }
 
 RuntimeBaseDir() {
