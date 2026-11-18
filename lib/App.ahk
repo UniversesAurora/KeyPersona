@@ -4,10 +4,10 @@ class KeyPersonaApp {
     static EVENT_MESSAGE := 0x8001
 
     __New(baseDir, observeOnly := false) {
-        this.BaseDir := baseDir
         this.ObserveOnly := observeOnly
-        LegacyMigration.MigrateRuntimeFiles(baseDir)
-        this.Config := KeyPersonaConfig(baseDir)
+        if !observeOnly
+            LegacyMigration.MigrateRuntimeFiles(baseDir)
+        this.Config := KeyPersonaConfig(baseDir, observeOnly)
         this.Logger := Logger(this.Config.LogPath, this.Config.LogLevel)
         this.Startup := StartupManager(this.Logger)
         this.Identity := WindowIdentity(this.Config, this.Logger)
@@ -58,6 +58,7 @@ class KeyPersonaApp {
         this.Hook := WindowWinEventHook(this.EventGui.Hwnd, KeyPersonaApp.EVENT_MESSAGE)
         this.Punctuation := PunctuationController(this)
         this.Tray := TrayMenuController(this)
+        this.Tray := observeOnly ? 0 : TrayMenuController(this)
     }
 
     Start() {
@@ -564,7 +565,8 @@ class KeyPersonaApp {
     }
 
     FlushState(*) {
-        this.Store.Flush()
+        if !this.Store.Flush() && !this.ShuttingDown
+            SetTimer(this.FlushCallback, -Max(10000, this.Config.SaveDebounceMs))
     }
 
     ToggleEnabled(*) {
@@ -800,6 +802,7 @@ class KeyPersonaApp {
         this.ObservationState := Map()
         this.CandidateSignature := ""
         if !this.Store.Flush() {
+            this.ScheduleFlush()
             TrayTip("无法保存清除结果，请检查程序目录是否可写。", AppInfo.Name, "Iconx")
             this.Tray.Refresh(true)
             return
@@ -811,8 +814,10 @@ class KeyPersonaApp {
     }
 
     ReloadConfiguration(*) {
-        this.FlushState()
-        Reload()
+        if this.Store.Flush()
+            Reload()
+        else
+            TrayTip("无法保存输入法记忆，暂缓重新加载。", AppInfo.Name, "Iconx")
     }
 
     Shutdown(*) {
@@ -829,7 +834,8 @@ class KeyPersonaApp {
         try OnMessage(KeyPersonaApp.EVENT_MESSAGE, this.MessageCallback, 0)
         try this.Punctuation.Dispose()
         try this.Tray.Dispose()
-        try this.Store.Flush()
+        if !this.ObserveOnly
+            try this.Store.Flush()
         this.Logger.Info(AppInfo.Name " stopped")
     }
 }

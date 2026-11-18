@@ -7,7 +7,8 @@ RunSelfTests(baseDir) {
     failures := []
     AssertTest(Fnv1a32("abc") = Fnv1a32("abc"), "FNV hash is stable", failures)
     escaped := IniEscape("a\b`r`nc")
-    AssertTest(IniUnescape(escaped) = "a\b`r`nc", "INI value round-trip", failures)
+    AssertTest(IniUnescape(escaped) = "a\b`r`nc" && IniUnescape(IniEscape(Chr(0xE000))) = Chr(0xE000),
+        "INI value round-trip including private-use Unicode", failures)
     desired := Map("profile", "0409:00000409", "imeOpen", "unknown", "conversion", "preserve", "sentence", "preserve")
     actual := Map("profile", "0409:00000409", "imeOpen", "unknown", "conversion", "unknown", "sentence", "unknown")
     AssertTest(StateMatches(actual, desired), "State wildcard comparison", failures)
@@ -52,6 +53,9 @@ RunSelfTests(baseDir) {
     AssertTest(noOpProbe.Apply(Map(), changedState) && noOpProbe.SetCalls = 1,
         "IME mode writes only changed fields", failures)
     AssertTest(ApplicationVersion() != "", "Application version discovery", failures)
+    lockPath := A_Temp "\keypersona-lock-selftest-" DllCall("kernel32\GetCurrentProcessId", "UInt")
+    AssertTest(AcquireRuntimeLock(lockPath) && !AcquireRuntimeLock(lockPath),
+        "A configuration directory is reserved for one writer", failures)
     try {
         about := AboutDialog()
         aboutPanel := about.CreatePanel()
@@ -209,7 +213,7 @@ RunSelfTests(baseDir) {
         && editableConfig.Doc.Get("rule.duplicate", "state", "") = "manual-japanese",
         "Rules are repointed to the canonical input state", failures)
     configWindow := Map(
-        "identityKey", "sample.exe|SampleClass|Sample",
+        "identityKey", "sample.exe|SampleClass|日本語 🚀",
         "exe", "sample.exe", "mode", "window"
     )
     AssertTest(editableConfig.SetWindowRule(configWindow, "wetype-chinese"), "Window rule write", failures)
@@ -313,7 +317,9 @@ RunSelfTests(baseDir) {
     AssertTest(MapGet(loadedStore.Find(syntheticWindow), "source", "") = "learned", "State source round-trip", failures)
     FileCopy(tempState, tempState ".bak", true)
     FileDelete(tempState)
-    FileAppend("[broken`n", tempState, "UTF-8")
+    missingStore := StateStore(tempState, testLogger)
+    AssertTest(missingStore.Records.Count = 1, "Missing main state uses backup", failures)
+    FileAppend("[meta]`nschemaVersion=3`nrecordCount=1`nupdatedAt=test`n`n[window.partial]`n", tempState, "UTF-8")
     recoveredStore := StateStore(tempState, testLogger)
     AssertTest(StateMatches(recoveredStore.Find(syntheticWindow), learnedState), "State backup recovery", failures)
     AssertTest(recoveredStore.ClearAll() = 1, "Clear-all removes persisted records", failures)

@@ -18,7 +18,7 @@ PowerShell 7 只负责执行 `build.ps1`，不是程序运行时的一部分。
 
 程序常驻后台，不创建主窗口。启动后依次完成：
 
-1. 迁移旧名称留下的配置、状态、日志和自启动入口。
+1. 为配置目录取得独占运行锁，再迁移旧名称留下的配置、状态和日志。
 2. 读取或创建 `config.ini`。
 3. 枚举当前用户启用的输入 profile，并对账命名状态、规则和自动记忆。
 4. 读取 `state.ini`；文件损坏时尝试读取 `state.ini.bak`。
@@ -204,13 +204,13 @@ Windows 没有一个文档化广播能同时覆盖 Win+Space、语言栏点击�
 - `[window-rule.*]` 当前窗口规则。
 - 符号转换总开关、逐项转换和全局/按应用自动补齐设置。
 
-程序通过托盘修改配置时会直接写回该文件，重新加载后生效。
+托盘更改以 UTF-8 保存一组设置，再原子替换配置文件。手动编辑文件后，从托盘重新加载。
 
 ### 9.2 `state.ini`
 
-`state.ini` 由程序维护，当前 `schemaVersion=2`。每条 `[window.<hash>]` 记录包含：
+`state.ini` 由程序维护，当前 `schemaVersion=3`。主文件带记录数和完整性标记，旧版文件仍可读取。每条 `[window.<hash>]` 记录包含以下字段。
 
-- `identityKey`、`mode`、exe、路径、class 和标准化标题。
+- `identityKey`、`mode` 和 exe。窗口模式还保存 class 和标准化标题。
 - profile、`imeOpen`、conversion 和 sentence。
 - `source`，当前自动学习记录使用 `learned`。
 - `lastSeen`。
@@ -318,7 +318,7 @@ KeyPersona/
 1. 用 AutoHotkey v2 运行源码自检。
 2. 用 Ahk2Exe 和指定的 64 位 AutoHotkey 运行时编译 `dist\KeyPersona.exe`。
 3. 运行编译后自检。
-4. 在临时目录执行 2 秒 observe-only 隔离烟雾测试。
+4. 在临时目录执行 2 秒 observe-only 启动测试。测试只读取输入状态，不迁移自启动、不启用符号热键，配置和记忆用测试目录。
 5. 如果指定 `-InstallDirectory`，复制 EXE；构建前程序正在运行时，安装后重新启动。
 6. 如果指定 `-Package`，生成版本化 ZIP 和 `SHA256SUMS.txt`。
 
@@ -337,7 +337,7 @@ KeyPersona/
 
 ## 15. 当前验证范围
 
-实际验证环境使用 AutoHotkey `2.0.28` 64 位，输入 profile 包括：
+实际验证环境使用 AutoHotkey `2.0.31` 64 位，输入 profile 包括：
 
 - English US：`0409:00000409`。
 - 微信输入法 2.1.4.6：`0804:{86598FB9-66A2-463E-B9C2-AEB906D477AD}{607FDF85-FCC8-4DBD-A365-41296F980C9C}`。

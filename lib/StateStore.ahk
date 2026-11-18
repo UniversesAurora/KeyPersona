@@ -8,34 +8,44 @@ class StateStore {
         this.Records := Map()
         this.Dirty := false
         this.ResetBackupOnFlush := false
+        this.MainValid := false
         this.Load()
     }
 
     Load() {
         this.Records := Map()
-        doc := IniDocument()
-        try {
-            doc := IniDocument.Load(this.Path)
-        } catch Error as err {
-            this.Logger.Warn("State file could not be read: " err.Message)
-        }
-        if (FileExist(this.Path) && !doc.Sections.Has("meta") && FileExist(this.BackupPath)) {
-            try {
-                backup := IniDocument.Load(this.BackupPath)
-                if backup.Sections.Has("meta") {
-                    doc := backup
-                    this.Logger.Warn("State file was invalid; loaded the backup instead")
-                }
-            } catch Error as err {
-                this.Logger.Warn("State backup could not be read: " err.Message)
+        snapshot := this.ReadSnapshot(this.Path)
+        this.MainValid := snapshot.valid
+        if !snapshot.valid {
+            backup := this.ReadSnapshot(this.BackupPath)
+            if backup.valid {
+                snapshot := backup
+                this.Logger.Warn("State file was missing or invalid; loaded its backup")
             }
         }
+        this.Records := snapshot.records
+        this.Dirty := false
+        this.Logger.Info("Loaded " this.Records.Count " remembered window state(s)")
+    }
+
+    ReadSnapshot(path) {
+        records := Map()
+        if !FileExist(path)
+            return {valid: false, records: records}
+        try doc := IniDocument.Load(path)
+        catch Error as failure {
+            this.Logger.Warn("State file could not be read: " failure.Message)
+            return {valid: false, records: records}
+        }
+        version := doc.Get("meta", "schemaVersion", "")
+        if ((version != "3" && version != "2" && version != "1") || doc.Get("meta", "updatedAt", "") = "")
+            return {valid: false, records: records}
         for section, values in doc.Sections {
             if !RegExMatch(section, "i)^window\.")
                 continue
             identityKey := IniUnescape(MapGet(values, "identityKey", ""))
-            if (identityKey = "")
-                continue
+            if (identityKey = "" || !values.Has("profile") || records.Has(identityKey))
+                return {valid: false, records: Map()}
             record := Map(
                 "identityKey", identityKey,
                 "mode", MapGet(values, "mode", "app"),
@@ -47,13 +57,15 @@ class StateStore {
                 "imeOpen", MapGet(values, "imeOpen", "unknown"),
                 "conversion", MapGet(values, "conversion", "unknown"),
                 "sentence", MapGet(values, "sentence", "unknown"),
-                "source", MapGet(values, "source", "learned"),
+                "source", "learned",
                 "lastSeen", MapGet(values, "lastSeen", "")
             )
-            this.Records[identityKey] := record
+            records[identityKey] := record
         }
-        this.Dirty := false
-        this.Logger.Info("Loaded " this.Records.Count " remembered window state(s)")
+        if (version = "3" && (doc.Get("meta", "recordCount", "-1") != records.Count
+            || doc.Get("end", "complete", "") != "1"))
+            return {valid: false, records: Map()}
+        return {valid: true, records: records}
     }
 
     Find(windowInfo) {
@@ -67,13 +79,14 @@ class StateStore {
         key := MapGet(windowInfo, "identityKey", "")
         if (key = "")
             return false
+        if this.Records.Has(key) && StateSignature(this.Records[key]) = StateSignature(state)
+            return false
         record := Map(
             "identityKey", key,
             "mode", MapGet(windowInfo, "mode", "app"),
             "exe", MapGet(windowInfo, "exe", ""),
-            "path", MapGet(windowInfo, "path", ""),
-            "class", MapGet(windowInfo, "class", ""),
-            "title", MapGet(windowInfo, "normalizedTitle", MapGet(windowInfo, "title", "")),
+            "class", MapGet(windowInfo, "mode", "app") = "window" ? MapGet(windowInfo, "class", "") : "",
+            "title", MapGet(windowInfo, "mode", "app") = "window" ? MapGet(windowInfo, "normalizedTitle", "") : "",
             "profile", MapGet(state, "profile", "unknown"),
             "imeOpen", MapGet(state, "imeOpen", "unknown"),
             "conversion", MapGet(state, "conversion", "unknown"),
@@ -81,12 +94,9 @@ class StateStore {
             "source", source,
             "lastSeen", FormatTime(, "yyyy-MM-dd HH:mm:ss")
         )
-        oldSignature := this.Records.Has(key) ? StateSignature(this.StateFromRecord(this.Records[key])) : ""
-        oldSource := this.Records.Has(key) ? MapGet(this.Records[key], "source", "learned") : ""
-        newSignature := StateSignature(state)
         this.Records[key] := record
         this.Dirty := true
-        return oldSignature != newSignature || oldSource != source
+        return true
     }
 
     Remove(windowInfo) {
@@ -94,6 +104,7 @@ class StateStore {
         if (key != "" && this.Records.Has(key)) {
             this.Records.Delete(key)
             this.Dirty := true
+            this.ResetBackupOnFlush := true
             return true
         }
         return false
@@ -140,47 +151,60 @@ class StateStore {
     Flush() {
         if !this.Dirty
             return true
+        wasCritical := A_IsCritical
+        Critical "On"
         tempPath := this.Path ".tmp." DllCall("kernel32\GetCurrentProcessId", "UInt")
+        backupTemp := tempPath ".bak"
         try {
-            try FileDelete(tempPath)
             stateFile := FileOpen(tempPath, "w", "UTF-8")
             if !IsObject(stateFile)
                 throw Error("Unable to open temporary state file")
-            stateFile.Write(this.Serialize())
-            stateFile.Close()
-            if FileExist(this.Path) && !this.ResetBackupOnFlush {
-                try FileCopy(this.Path, this.BackupPath, true)
+            try stateFile.Write(this.Serialize())
+            finally stateFile.Close()
+            if !this.ResetBackupOnFlush && this.MainValid && FileExist(this.Path) {
+                try this.ReplaceBackup(this.Path, backupTemp)
+                catch Error as failure
+                    this.Logger.Warn("Could not update the state backup: " failure.Message)
             }
-            flags := 0x1 | 0x8
-            if !DllCall("kernel32\MoveFileExW", "WStr", tempPath, "WStr", this.Path, "UInt", flags, "Int")
+            if !DllCall("kernel32\MoveFileExW", "WStr", tempPath, "WStr", this.Path, "UInt", 0x9, "Int")
                 throw OSError(A_LastError, "MoveFileExW")
-            if this.ResetBackupOnFlush {
-                try FileCopy(this.Path, this.BackupPath, true)
-                catch Error as backupError
-                    this.Logger.Warn("Cleared state backup could not be refreshed: " backupError.Message)
-            }
+            this.MainValid := true
+            if this.ResetBackupOnFlush
+                this.ReplaceBackup(this.Path, backupTemp)
             this.Dirty := false
             this.ResetBackupOnFlush := false
             this.Logger.Debug("State file flushed")
             return true
         } catch Error as err {
             this.Logger.Error("State flush failed: " err.Message)
-            try FileDelete(tempPath)
             return false
+        } finally {
+            try FileDelete(tempPath)
+            try FileDelete(backupTemp)
+            Critical wasCritical
         }
+    }
+
+    ReplaceBackup(sourcePath, backupTemp) {
+        FileCopy(sourcePath, backupTemp, true)
+        if !DllCall("kernel32\MoveFileExW", "WStr", backupTemp, "WStr", this.BackupPath, "UInt", 0x9, "Int")
+            throw OSError(A_LastError, "MoveFileExW")
     }
 
     Serialize() {
         text := "; Managed by " AppInfo.Name ". Edit " AppInfo.ConfigFile ", not this file, while the app is running.`n"
             . "[meta]`n"
-            . "schemaVersion=2`n"
+            . "schemaVersion=3`nrecordCount=" this.Records.Count "`n"
             . "updatedAt=" FormatTime(, "yyyy-MM-dd HH:mm:ss") "`n`n"
+        used := Map()
         for identityKey, record in this.Records {
-            text .= "[window." Fnv1a32(identityKey) "]`n"
+            hash := Fnv1a32(identityKey)
+            occurrence := MapGet(used, hash, 0) + 1
+            used[hash] := occurrence
+            text .= "[window." hash (occurrence = 1 ? "" : "-" occurrence) "]`n"
             text .= "identityKey=" IniEscape(identityKey) "`n"
             text .= "mode=" MapGet(record, "mode", "app") "`n"
             text .= "exe=" IniEscape(MapGet(record, "exe", "")) "`n"
-            text .= "path=" IniEscape(MapGet(record, "path", "")) "`n"
             text .= "class=" IniEscape(MapGet(record, "class", "")) "`n"
             text .= "title=" IniEscape(MapGet(record, "title", "")) "`n"
             text .= "profile=" MapGet(record, "profile", "unknown") "`n"
@@ -190,6 +214,6 @@ class StateStore {
             text .= "source=" MapGet(record, "source", "learned") "`n"
             text .= "lastSeen=" MapGet(record, "lastSeen", "") "`n`n"
         }
-        return text
+        return text "[end]`ncomplete=1`n"
     }
 }

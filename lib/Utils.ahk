@@ -55,17 +55,20 @@ IniEscape(value) {
 }
 
 IniUnescape(value) {
-    marker := Chr(0xE000)
-    value := StrReplace(value "", "\\", marker)
-    value := StrReplace(value, "\r", "`r")
-    value := StrReplace(value, "\n", "`n")
-    return StrReplace(value, marker, "\")
+    result := ""
+    offset := 1
+    while (position := RegExMatch(value, "\\([\\rn])", &escaped, offset)) {
+        result .= SubStr(value, offset, position - offset)
+        result .= escaped[1] = "r" ? "`r" : escaped[1] = "n" ? "`n" : "\"
+        offset := position + 2
+    }
+    return result SubStr(value, offset)
 }
 
 JoinValues(values, separator := ",") {
     output := ""
-    for value in values
-        output .= (output = "" ? "" : separator) value
+    for index, value in values
+        output .= (index = 1 ? "" : separator) value
     return output
 }
 
@@ -157,13 +160,91 @@ StateLabel(state) {
 class IniDocument {
     __New() {
         this.Sections := Map()
+        this.Sections.CaseSense := "Off"
+        this.SectionOrder := []
+        this.RepeatedSections := Map()
+        this.RepeatedSections.CaseSense := "Off"
+    }
+
+    static Update(path, changes, expected := unset) {
+        if !changes.Length
+            return true
+        wasCritical := A_IsCritical
+        Critical "On"
+        tempPath := path ".tmp." DllCall("kernel32\GetCurrentProcessId", "UInt")
+        try {
+            original := FileExist(path) ? FileRead(path, "UTF-8") : ""
+            if IsSet(expected) && !(original == expected)
+                return false
+            lines := StrSplit(StrReplace(original, "`r`n", "`n"), "`n")
+            for change in changes
+                IniDocument.ApplyChange(lines, change)
+            updated := JoinValues(lines, "`n")
+            if (updated == StrReplace(original, "`r`n", "`n"))
+                return true
+            if (updated != "" && SubStr(updated, -1) != "`n")
+                updated .= "`n"
+            configFile := FileOpen(tempPath, "w", "UTF-8")
+            try configFile.Write(updated)
+            finally configFile.Close()
+            if !DllCall("kernel32\MoveFileExW", "WStr", tempPath, "WStr", path, "UInt", 0x9, "Int")
+                throw OSError(A_LastError, "MoveFileExW")
+            return true
+        } finally {
+            try FileDelete(tempPath)
+            Critical wasCritical
+        }
+    }
+
+    static ApplyChange(lines, change) {
+        section := change[1]
+        key := change.Length >= 2 ? change[2] : ""
+        writing := change.Length = 3
+        start := 0
+        finish := lines.Length + 1
+        found := 0
+        for index, line in lines {
+            if RegExMatch(Trim(line), "^\[([^\]]+)\]$", &heading) {
+                if start {
+                    finish := index
+                    break
+                }
+                if (Trim(heading[1]) = section)
+                    start := index
+                continue
+            }
+            equals := InStr(line, "=")
+            if start && key != "" && equals && Trim(SubStr(line, 1, equals - 1)) = key
+                found := index
+        }
+        if !start {
+            if writing {
+                if (lines[lines.Length] != "")
+                    lines.Push("")
+                lines.Push("[" section "]", key "=" change[3], "")
+            }
+        } else if (key = "") {
+            lines.RemoveAt(start, finish - start)
+            if !lines.Length
+                lines.Push("")
+        } else if found {
+            if writing
+                lines[found] := key "=" change[3]
+            else
+                lines.RemoveAt(found)
+        } else if writing {
+            while (finish > start + 1 && Trim(lines[finish - 1]) = "")
+                finish -= 1
+            lines.InsertAt(finish, key "=" change[3])
+        }
     }
 
     static Load(path) {
+        return IniDocument.Parse(FileExist(path) ? FileRead(path, "UTF-8") : "")
+    }
+
+    static Parse(text) {
         doc := IniDocument()
-        if !FileExist(path)
-            return doc
-        text := FileRead(path, "UTF-8")
         current := ""
         for rawLine in StrSplit(StrReplace(text, "`r"), "`n") {
             line := Trim(rawLine)
@@ -171,8 +252,13 @@ class IniDocument {
                 continue
             if RegExMatch(line, "^\[([^\]]+)\]$", &match) {
                 current := Trim(match[1])
-                if !doc.Sections.Has(current)
-                    doc.Sections[current] := Map()
+                if !doc.Sections.Has(current) {
+                    section := Map()
+                    section.CaseSense := "Off"
+                    doc.Sections[current] := section
+                    doc.SectionOrder.Push(current)
+                } else
+                    doc.RepeatedSections[current] := true
                 continue
             }
             if (current = "")
@@ -202,6 +288,8 @@ class Logger {
     __New(path, level := "info") {
         this.Path := path
         this.Level := StrLower(level)
+        this.Bytes := 0
+        try this.Bytes := FileGetSize(path)
     }
 
     Debug(message) {
@@ -225,6 +313,16 @@ class Logger {
     }
 
     Write(level, message) {
-        try FileAppend(FormatTime(, "yyyy-MM-dd HH:mm:ss") " [" level "] " message "`n", this.Path, "UTF-8")
+        if (this.Bytes >= 1024 * 1024) {
+            try {
+                FileMove(this.Path, this.Path ".old", true)
+                this.Bytes := 0
+            }
+        }
+        line := FormatTime(, "yyyy-MM-dd HH:mm:ss") " [" level "] " message "`n"
+        try {
+            FileAppend(line, this.Path, "UTF-8")
+            this.Bytes += StrPut(line, "UTF-8") - 1
+        }
     }
 }

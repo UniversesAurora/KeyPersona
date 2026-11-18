@@ -51,7 +51,7 @@ ZIP 中的 `config.example.ini` 是默认配置示例。升级现有安装时不
 - `config.ini`：用户配置、命名状态和用户规则。
 - `state.ini`：程序自动学习的窗口状态。
 - `state.ini.bak`：状态文件损坏恢复副本。
-- `KeyPersona.log`：运行日志。
+- `KeyPersona.log`：运行日志，达到约 1 MiB 时轮换并保留上一份。
 
 升级自旧名 IME Memory 时，原有 `config.ini`、`state.ini`、日志和自启动入口会自动迁移；配置和记忆不会重置。
 

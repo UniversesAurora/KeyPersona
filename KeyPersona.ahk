@@ -32,19 +32,40 @@ if HasArgument("--self-test") {
 }
 
 observeOnly := HasArgument("--observe-only")
+if observeOnly
+    A_IconHidden := true
 smokeSeconds := ArgumentValue("--smoke-seconds=", 0)
 appBaseDir := RuntimeBaseDir()
-global KEYPERSONA_APP := KeyPersonaApp(appBaseDir, observeOnly)
-OnExit(ObjBindMethod(KEYPERSONA_APP, "Shutdown"))
-
 try {
     KEYPERSONA_APP.Start()
     if (smokeSeconds > 0)
         SetTimer((*) => ExitApp(), -smokeSeconds * 1000)
 } catch Error as startupError {
-    KEYPERSONA_APP.Logger.Error("Fatal startup error: " startupError.Message " at " startupError.File ":" startupError.Line)
+    try KEYPERSONA_APP.Logger.Error("Fatal startup error: " startupError.Message " at " startupError.File ":" startupError.Line)
     FileAppend(AppInfo.Name " startup failed: " startupError.Message "`n", "**", "UTF-8")
+    if !observeOnly
+        TrayTip("启动失败。" startupError.Message, AppInfo.Name, "Iconx")
     ExitApp(1)
+}
+
+AcquireRuntimeLock(baseDir) {
+    normalized := StrLower(RTrim(baseDir, "\"))
+    mutexName := "Local\" AppInfo.Name "." Fnv1a32(normalized) "." Fnv1a32(normalized "|" StrLen(normalized))
+    existing := DllCall("kernel32\OpenMutexW", "UInt", 0x100000, "Int", false, "WStr", mutexName, "Ptr")
+    if existing {
+        DllCall("kernel32\CloseHandle", "Ptr", existing)
+        return false
+    }
+    handle := DllCall("kernel32\CreateMutexW", "Ptr", 0, "Int", false, "WStr", mutexName, "Ptr")
+    status := A_LastError
+    if !handle
+        throw OSError(status, "CreateMutexW")
+    if (status = 183) {
+        DllCall("kernel32\CloseHandle", "Ptr", handle)
+        return false
+    }
+    ; The handle stays open until process exit so shutdown can flush before handover.
+    return true
 }
 
 HasArgument(expected) {
@@ -78,8 +99,9 @@ GlobalErrorHandler(thrown, mode) {
         . "File: " thrown.File "`n"
         . "Line: " thrown.Line "`n"
         . "Mode: " mode "`n"
-    try FileAppend(FormatTime(, "yyyy-MM-dd HH:mm:ss") " " message, A_ScriptDir "\" AppInfo.ErrorLogFile, "UTF-8")
+    try FileAppend(FormatTime(, "yyyy-MM-dd HH:mm:ss") " " message, RuntimeBaseDir() "\" AppInfo.ErrorLogFile, "UTF-8")
     try FileAppend(message, "**", "UTF-8")
-    ExitApp(1)
-    return true
+    if HasArgument("--self-test") || HasArgument("--observe-only")
+        ExitApp(1)
+    return 1
 }

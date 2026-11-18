@@ -1,18 +1,20 @@
 #Requires AutoHotkey v2.0
 
 class KeyPersonaConfig {
-    __New(baseDir) {
-        this.BaseDir := baseDir
+    __New(baseDir, readOnly := false) {
         this.Path := baseDir "\" AppInfo.ConfigFile
         this.StatePath := baseDir "\" AppInfo.StateFile
         this.LogPath := baseDir "\" AppInfo.LogFile
-        this.EnsureDefaultFile()
+        this.ReadOnly := readOnly
+        if !readOnly
+            this.EnsureDefaultFile()
         this.Reload()
     }
 
     Reload() {
         this.Doc := IniDocument.Load(this.Path)
-        this.MigratePunctuationSettings()
+        if !this.ReadOnly
+            this.MigratePunctuationSettings()
         this.Enabled := ParseBool(this.Doc.Get("general", "enabled", "1"), true)
         this.AutoMemory := ParseBool(this.Doc.Get("general", "autoMemory", "1"), true)
         this.DefaultState := this.Doc.Get("general", "defaultState", "wetype-chinese")
@@ -37,12 +39,24 @@ class KeyPersonaConfig {
             if (rule["close"] != "")
                 this.PunctuationPairs[id] := ParseBool(this.Doc.Get("punctuation", "pair." id, "0"))
         }
+        this.LoadAppIdentities()
         this.PunctuationApps := this.LoadPunctuationApps()
         this.AppInputPolicies := this.LoadAppInputPolicies()
         this.PunctuationRevision := this.HasOwnProp("PunctuationRevision") ? this.PunctuationRevision + 1 : 1
         this.NamedStates := this.LoadNamedStates()
+        this.DetailedProfiles := Map()
+        for _, state in this.NamedStates {
+            if ImeMode.NeedsDetailedMode(state)
+                this.DetailedProfiles[StrLower(state["profile"])] := true
+        }
         this.RuleSections := this.LoadPrefixedSections("rule.")
         this.WindowRules := this.LoadWindowRules()
+    }
+
+    WriteChanges(changes, expected := unset) {
+        if this.ReadOnly
+            throw Error("Configuration is read-only")
+        return IniDocument.Update(this.Path, changes, expected?)
     }
 
     MigratePunctuationSettings() {
@@ -50,13 +64,13 @@ class KeyPersonaConfig {
             return
         oldValue := ParseBool(this.Doc.Sections["typing"]["backtickInChinese"]) ? "1" : "0"
         newValues := MapGet(this.Doc.Sections, "punctuation", Map())
+        changes := []
         if !newValues.Has("enabled")
-            IniWrite(oldValue, this.Path, "punctuation", "enabled")
+            changes.Push(["punctuation", "enabled", oldValue])
         if !newValues.Has("convert.backtick")
-            IniWrite(oldValue, this.Path, "punctuation", "convert.backtick")
-        IniDelete(this.Path, "typing", "backtickInChinese")
-        if (this.Doc.Sections["typing"].Count = 1)
-            IniDelete(this.Path, "typing")
+            changes.Push(["punctuation", "convert.backtick", oldValue])
+        changes.Push(this.Doc.Sections["typing"].Count = 1 ? ["typing"] : ["typing", "backtickInChinese"])
+        this.WriteChanges(changes)
         this.Doc := IniDocument.Load(this.Path)
     }
 
@@ -291,14 +305,14 @@ class KeyPersonaConfig {
     SetDefaultState(name) {
         if !this.NamedStates.Has(name)
             return false
-        IniWrite(name, this.Path, "general", "defaultState")
+        this.WriteChanges([["general", "defaultState", name]])
         this.DefaultState := name
         return true
     }
 
     SetAutoMemory(enabled) {
         value := enabled ? "1" : "0"
-        IniWrite(value, this.Path, "general", "autoMemory")
+        this.WriteChanges([["general", "autoMemory", value]])
         this.AutoMemory := !!enabled
         return this.AutoMemory
     }
@@ -351,7 +365,7 @@ class KeyPersonaConfig {
     }
 
     SetPunctuationEnabled(enabled) {
-        IniWrite(enabled ? "1" : "0", this.Path, "punctuation", "enabled")
+        this.WriteChanges([["punctuation", "enabled", enabled ? "1" : "0"]])
         this.PunctuationEnabled := !!enabled
         this.PunctuationRevision += 1
     }
@@ -360,7 +374,7 @@ class KeyPersonaConfig {
         rule := PunctuationCatalog.Find(id)
         if !rule.Count || (pair && rule["close"] = "")
             return false
-        IniWrite(enabled ? "1" : "0", this.Path, "punctuation", (pair ? "pair." : "convert.") id)
+        this.WriteChanges([["punctuation", (pair ? "pair." : "convert.") id, enabled ? "1" : "0"]])
         options := pair ? this.PunctuationPairs : this.PunctuationConvert
         options[id] := !!enabled
         this.PunctuationRevision += 1
@@ -434,16 +448,17 @@ class KeyPersonaConfig {
         key := id = "" ? "enabled" : (pair ? "pair." : "convert.") id
         if (mode = "inherit") {
             if this.PunctuationApps.Has(exe)
-                IniDelete(this.Path, section, key)
+                this.WriteChanges([[section, key]])
         } else {
-            IniWrite(exe, this.Path, section, "exe")
-            IniWrite(mode, this.Path, section, key)
+            changes := KeyPersonaConfig.AppSelectorFields(section, exe)
+            changes.Push([section, key, mode])
+            this.WriteChanges(changes)
         }
         this.Reload()
         if this.PunctuationApps.Has(exe) {
             app := this.PunctuationApps[exe]
             if (app["enabled"] = "inherit" && !app["convert"].Count && !app["pairs"].Count) {
-                IniDelete(this.Path, section)
+                this.WriteChanges([[section]])
                 this.Reload()
             }
         }
@@ -454,7 +469,7 @@ class KeyPersonaConfig {
         exe := StrLower(exe)
         if !this.PunctuationApps.Has(exe)
             return
-        IniDelete(this.Path, this.PunctuationApps[exe]["section"])
+        this.WriteChanges([[this.PunctuationApps[exe]["section"]]])
         this.Reload()
     }
 
@@ -469,7 +484,7 @@ class KeyPersonaConfig {
             return Map()
         return Map(
             "name", stored["name"],
-            "scope", "window",
+            "scope", inherited ? "application" : "window",
             "stateName", stateName,
             "state", state
         )
@@ -479,11 +494,14 @@ class KeyPersonaConfig {
         identityKey := MapGet(windowInfo, "identityKey", "")
         if (identityKey = "" || !this.NamedStates.Has(stateName))
             return false
-        section := "window-rule." Fnv1a32(identityKey)
-        IniWrite(IniEscape(identityKey), this.Path, section, "identityKey")
-        IniWrite(stateName, this.Path, section, "state")
-        IniWrite(MapGet(windowInfo, "exe", ""), this.Path, section, "exe")
-        IniWrite(MapGet(windowInfo, "mode", "app"), this.Path, section, "mode")
+        existing := MapGet(this.WindowRules, identityKey, Map())
+        section := MapGet(existing, "section", "window-rule." Fnv1a32(identityKey))
+        baseSection := section
+        while this.Doc.Sections.Has(section)
+            && IniUnescape(this.Doc.Get(section, "identityKey", "")) != identityKey
+            section := baseSection "-" A_Index
+        this.WriteChanges([[section, "identityKey", IniEscape(identityKey)], [section, "state", stateName],
+            [section, "exe", MapGet(windowInfo, "exe", "")], [section, "mode", MapGet(windowInfo, "mode", "app")]])
         this.Reload()
         return this.WindowRules.Has(identityKey)
     }
@@ -493,7 +511,7 @@ class KeyPersonaConfig {
         if (identityKey = "" || !this.WindowRules.Has(identityKey))
             return false
         section := this.WindowRules[identityKey]["section"]
-        IniDelete(this.Path, section)
+        this.WriteChanges([[section]])
         this.Reload()
         return !this.WindowRules.Has(identityKey)
     }
