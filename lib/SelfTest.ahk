@@ -633,3 +633,62 @@ class InputRestorationClockProbe extends InputRestoration {
     ScheduleCheck(delay) {
     }
 }
+
+TestAppInputPolicy(config, logger, failures) {
+    originalAutoMemory := config.AutoMemory
+    originalPolicies := config.AppInputPolicies
+    config.AppInputPolicies := Map("probe.exe", Map("excludeMemory", true, "force", true))
+    config.AutoMemory := true
+    try {
+        actual := Map("profile", "0804:probe", "kind", "tip", "imeOpen", "1", "focusHwnd", 101)
+        remembered := Map("profile", "0409:00000409", "kind", "keyboard", "source", "learned")
+        rule := Map("state", Map("profile", "0411:00000411"))
+        app := InputRestorationProbe(config, logger, actual)
+        app.Saved := remembered
+        app.SessionStates["100"] := remembered
+        desired := app.SelectDesiredState(app.CurrentWindow, rule)
+        AssertTest(!app.CanRemember(app.CurrentWindow) && desired["profile"] = "0411:00000411"
+            && !app.StoreReads && app.Saved = remembered,
+            "An excluded app skips automatic memory reads and uses its rule", failures)
+        AssertTest(!app.SelectDesiredState(app.CurrentWindow, Map()).Count,
+            "An excluded app without a rule has no automatic target", failures)
+
+        config.AppInputPolicies["probe.exe"]["excludeMemory"] := false
+        desired := app.SelectDesiredState(app.CurrentWindow, rule)
+        app.SetEnforcedTarget(app.CurrentWindow, desired)
+        AssertTest(app.Enforcement.Target["profile"] = remembered["profile"],
+            "Enforcement picks the remembered input for an app that still uses memory", failures)
+        app.ObserveCurrentWindow()
+        AssertTest(app.LayoutRequests = 1 && app.Saved = remembered && app.Restore.Pending.reason = "enforce",
+            "Observed drift is corrected and does not replace the saved preference", failures)
+        app.ExpireRestoreCheck()
+        app.ObserveCurrentWindow()
+        AssertTest(!app.Restore.Pending && app.LayoutRequests = 1 && app.Enforcement.Failures = 1,
+            "A refused forced correction enters backoff without another request", failures)
+
+        app.Actual := StateClone(remembered)
+        app.Actual["focusHwnd"] := 101
+        app.ObserveCurrentWindow()
+        AssertTest(!app.Enforcement.Failures && app.LayoutRequests = 1,
+            "A matched target clears backoff without writing", failures)
+        app.Actual := actual
+        config.AutoMemory := false
+        desired := app.SelectDesiredState(app.CurrentWindow, rule)
+        app.SetEnforcedTarget(app.CurrentWindow, desired)
+        app.ObserveCurrentWindow()
+        AssertTest(app.LayoutRequests = 2 && app.Enforcement.Target["profile"] = "0411:00000411",
+            "An explicit rule can be forced even with global memory off", failures)
+        app.Restore.Cancel()
+
+        app.Enforcement.SetTarget("probe.exe", actual)
+        AssertTest(!app.Enforcement.ShouldRestore(Map("profile", "0804:unknown"), 1000)
+            && !app.Enforcement.ShouldRestore(Map("profile", "0804:probe", "kind", "tip"), 1000)
+            && !app.Enforcement.ShouldRestore(Map("profile", "0804:probe", "kind", "tip",
+                "imeOpen", "1", "conversion", "0x8"), 1000)
+            && app.Enforcement.ShouldRestore(Map("profile", "0804:probe", "kind", "tip", "imeOpen", "0"), 1000),
+            "Force mode acts on known source and open-mode differences only", failures)
+    } finally {
+        config.AutoMemory := originalAutoMemory
+        config.AppInputPolicies := originalPolicies
+    }
+}

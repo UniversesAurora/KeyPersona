@@ -208,6 +208,15 @@ class KeyPersonaApp {
         return desired
     }
 
+    CanRemember(windowInfo) {
+        return this.Config.AutoMemory && !this.Config.IsAppMemoryExcluded(MapGet(windowInfo, "exe", ""))
+    }
+
+    SetEnforcedTarget(windowInfo, desired) {
+        exe := MapGet(windowInfo, "exe", "")
+        this.Enforcement.SetTarget(exe, this.Config.IsAppInputForced(exe) ? desired : Map())
+    }
+
     static ChooseDesiredState(autoMemory, sessionState, savedState, matchedRule, defaultState) {
         if (autoMemory && sessionState.Count && HasKnownProfile(sessionState)
             && KeyPersonaApp.IsRestorableSessionState(sessionState))
@@ -588,6 +597,37 @@ class KeyPersonaApp {
             : "已关闭全局自动记忆。已启用强制保持的应用可继续使用匹配的用户规则。",
             AppInfo.Name, "Mute")
         this.Tray.Refresh(true)
+    }
+
+    ToggleAppInputOption(exe, option, *) {
+        enabled := option = "excludeMemory" ? !this.Config.IsAppMemoryExcluded(exe) : !this.Config.IsAppInputForced(exe)
+        try saved := this.Config.SetAppInputOption(exe, option, enabled)
+        catch Error as failure {
+            this.Logger.Error("Could not save input settings for " exe ": " failure.Message)
+            saved := false
+        }
+        if !saved {
+            TrayTip("无法保存此应用的输入法设置。", AppInfo.Name, "Iconx")
+            return
+        }
+        if StrLower(MapGet(this.CurrentWindow, "exe", "")) = StrLower(exe)
+            this.RefreshCurrentInputPolicy()
+        this.Tray.Refresh(true)
+    }
+
+    RefreshCurrentInputPolicy() {
+        this.Restore.Cancel()
+        this.ObservationState := Map()
+        this.CandidateSignature := ""
+        if !this.CurrentWindow.Count
+            return
+        window := this.CurrentWindow
+        this.CurrentRule := this.MatchRule(window)
+        desired := this.SelectDesiredState(window, this.CurrentRule)
+        this.SetEnforcedTarget(window, desired)
+        this.BeginBurst()
+        if this.Enabled
+            this.ObserveCurrentWindow()
     }
 
     SetCurrentState(stateName) {

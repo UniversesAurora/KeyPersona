@@ -19,6 +19,7 @@ class KeyPersonaConfig {
         this.ForegroundSettleMs := ParseInt(this.Doc.Get("general", "foregroundSettleMs", "80"), 80, 20, 500)
         this.ActivePollMs := ParseInt(this.Doc.Get("general", "activePollMs", "250"), 250, 100, 2000)
         this.IdlePollMs := ParseInt(this.Doc.Get("general", "idlePollMs", "1000"), 1000, 250, 10000)
+        this.ForcePollMs := ParseInt(this.Doc.Get("general", "forcePollMs", "100"), 100, 80, 1000)
         this.BurstDurationMs := ParseInt(this.Doc.Get("general", "burstDurationMs", "2000"), 2000, 250, 10000)
         this.ApplySuppressMs := ParseInt(this.Doc.Get("general", "applySuppressMs", "1000"), 1000, 300, 5000)
         this.SaveDebounceMs := ParseInt(this.Doc.Get("general", "saveDebounceMs", "2000"), 2000, 100, 30000)
@@ -37,6 +38,7 @@ class KeyPersonaConfig {
                 this.PunctuationPairs[id] := ParseBool(this.Doc.Get("punctuation", "pair." id, "0"))
         }
         this.PunctuationApps := this.LoadPunctuationApps()
+        this.AppInputPolicies := this.LoadAppInputPolicies()
         this.PunctuationRevision := this.HasOwnProp("PunctuationRevision") ? this.PunctuationRevision + 1 : 1
         this.NamedStates := this.LoadNamedStates()
         this.RuleSections := this.LoadPrefixedSections("rule.")
@@ -301,6 +303,53 @@ class KeyPersonaConfig {
         return this.AutoMemory
     }
 
+    LoadAppInputPolicies() {
+        policies := Map()
+        for section, values in this.Doc.Sections {
+            if !RegExMatch(section, "i)^input-app\.")
+                continue
+            exe := StrLower(Trim(MapGet(values, "exe", "")))
+            if (exe != "")
+                policies[exe] := Map("section", section,
+                    "excludeMemory", !ParseBool(MapGet(values, "autoMemory", "1"), true),
+                    "force", ParseBool(MapGet(values, "force", "0")))
+        }
+        return policies
+    }
+
+    IsAppMemoryExcluded(exe) {
+        exe := StrLower(exe)
+        return this.AppInputPolicies.Has(exe) && this.AppInputPolicies[exe]["excludeMemory"]
+    }
+
+    IsAppInputForced(exe) {
+        exe := StrLower(exe)
+        return this.AppInputPolicies.Has(exe) && this.AppInputPolicies[exe]["force"]
+    }
+
+    SetAppInputOption(exe, option, enabled) {
+        exe := StrLower(Trim(exe))
+        if (exe = "" || (option != "excludeMemory" && option != "force"))
+            return false
+        key := option = "excludeMemory" ? "autoMemory" : "force"
+        policy := MapGet(this.AppInputPolicies, exe, Map())
+        section := MapGet(policy, "section", "input-app." Fnv1a32(exe))
+        if enabled {
+            if !policy.Count
+                IniWrite(exe, this.Path, section, "exe")
+            IniWrite(key = "autoMemory" ? "0" : "1", this.Path, section, key)
+        } else if policy.Count {
+            values := this.Doc.Sections[section]
+            if (values.Count = 2 && values.Has(key))
+                IniDelete(this.Path, section)
+            else
+                IniDelete(this.Path, section, key)
+        }
+        this.Doc := IniDocument.Load(this.Path)
+        this.AppInputPolicies := this.LoadAppInputPolicies()
+        return true
+    }
+
     SetPunctuationEnabled(enabled) {
         IniWrite(enabled ? "1" : "0", this.Path, "punctuation", "enabled")
         this.PunctuationEnabled := !!enabled
@@ -477,6 +526,7 @@ class KeyPersonaConfig {
             . "foregroundSettleMs=80`n"
             . "activePollMs=250`n"
             . "idlePollMs=1000`n"
+            . "forcePollMs=100`n"
             . "burstDurationMs=2000`n"
             . "applySuppressMs=1000`n"
             . "saveDebounceMs=2000`n"
