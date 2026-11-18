@@ -77,6 +77,7 @@ class KeyPersonaConfig {
 
     LoadNamedStates() {
         states := Map()
+        states.CaseSense := "Off"
         for section, values in this.Doc.Sections {
             if !RegExMatch(section, "i)^state\.(.+)$", &match)
                 continue
@@ -106,70 +107,72 @@ class KeyPersonaConfig {
         )
         if !IsObject(catalog) || catalog.Count = 0
             return result
-        result["added"] := this.AddDiscoveredStates(catalog)
-        if !authoritative
-            return result
-        for catalogKey, profile in catalog
-            result["validProfiles"][StrLower(MapGet(profile, "id", catalogKey))] := true
-        result["authoritative"] := true
+        states := this.NamedStates.Clone()
+        changes := []
+        result["added"] := this.PlanDiscoveredStates(catalog, states, changes)
+        if authoritative {
+            valid := result["validProfiles"]
+            for catalogKey, profile in catalog
+                valid[StrLower(MapGet(profile, "id", catalogKey))] := true
+            result["authoritative"] := true
 
-        cleanup := this.CleanupDiscoveredStates(result["validProfiles"])
-        for field in ["removedStates", "removedRules", "repointedRules"]
-            result[field] := cleanup[field]
-
-        if (!this.NamedStates.Has(this.DefaultState)
-            || !result["validProfiles"].Has(StrLower(MapGet(this.GetNamedState(this.DefaultState), "profile", "")))) {
-            fallback := this.FindValidDefaultState(catalog)
-            if (fallback != "" && fallback != this.DefaultState) {
-                IniWrite(fallback, this.Path, "general", "defaultState")
-                this.Reload()
+            defaultName := this.PlanDiscoveredCleanup(states, valid, changes, result)
+            if !states.Has(defaultName)
+                defaultName := this.FindValidDefaultState(catalog, states)
+            if defaultName != "" && defaultName != this.DefaultState {
+                changes.Push(["general", "defaultState", defaultName])
                 result["defaultChanged"] := true
             }
+        }
+        if changes.Length {
+            this.WriteChanges(changes)
+            this.Reload()
         }
         return result
     }
 
-    AddDiscoveredStates(catalog) {
+    PlanDiscoveredStates(catalog, states, changes) {
         existing := Map()
-        for stateName, state in this.NamedStates {
+        for _, state in states {
             key := this.DiscoveredStateKey(
                 MapGet(state, "profile", "unknown"),
-                MapGet(state, "imeOpen", "unknown")
+                MapGet(state, "imeOpen", "unknown"),
+                MapGet(state, "conversion", "preserve"), MapGet(state, "sentence", "preserve")
             )
             existing[key] := true
         }
         added := 0
-        for catalogKey, profile in catalog {
-            profileId := MapGet(profile, "id", "")
-            if (profileId = "")
+        for _, profile in catalog {
+            if MapGet(profile, "id", "") = ""
                 continue
             if ImeMode.HasModePresets(profile) {
                 ; Keep the existing Chinese state names for rules and saved defaults.
                 chinese := (profile["langId"] & 0x03FF) = 0x04
-                added += this.EnsureDiscoveredState(profile, "1", chinese ? "chinese" : "ime-on", existing)
-                added += this.EnsureDiscoveredState(profile, "0", chinese ? "english" : "ime-off", existing)
+                added += this.PlanDiscoveredState(profile, "1", chinese ? "chinese" : "ime-on", existing, changes, states)
+                added += this.PlanDiscoveredState(profile, "0", chinese ? "english" : "ime-off", existing, changes, states)
             }
-            added += this.EnsureDiscoveredState(profile, "unknown", "", existing)
+            added += this.PlanDiscoveredState(profile, "unknown", "", existing, changes, states)
         }
-        if added
-            this.Reload()
         return added
     }
 
-    CleanupDiscoveredStates(validProfiles) {
+    PlanDiscoveredCleanup(states, validProfiles, changes, result) {
         invalid := Map()
+        invalid.CaseSense := "Off"
         canonicalByKey := Map()
         duplicates := Map()
+        duplicates.CaseSense := "Off"
         for generatedPass in [false, true] {
-            for stateName, state in this.NamedStates {
+            for stateName, state in states {
+                if (MapGet(state, "generated", false) != generatedPass)
+                    continue
                 profileId := StrLower(MapGet(state, "profile", ""))
                 if !validProfiles.Has(profileId) {
                     invalid[stateName] := true
                     continue
                 }
-                if (MapGet(state, "generated", false) != generatedPass)
-                    continue
-                key := this.DiscoveredStateKey(profileId, MapGet(state, "imeOpen", "unknown"))
+                key := this.DiscoveredStateKey(profileId, MapGet(state, "imeOpen", "unknown"),
+                    MapGet(state, "conversion", "preserve"), MapGet(state, "sentence", "preserve"))
                 if canonicalByKey.Has(key)
                     duplicates[stateName] := canonicalByKey[key]
                 else
@@ -177,49 +180,33 @@ class KeyPersonaConfig {
             }
         }
 
-        removedRules := 0
-        repointedRules := 0
         for section, values in this.Doc.Sections {
             if !RegExMatch(section, "i)^(rule\.|window-rule\.)")
                 continue
             stateName := MapGet(values, "state", "")
             if invalid.Has(stateName) {
-                IniDelete(this.Path, section)
-                removedRules += 1
+                changes.Push([section])
+                result["removedRules"] += 1
             } else if duplicates.Has(stateName) {
-                IniWrite(duplicates[stateName], this.Path, section, "state")
-                repointedRules += 1
+                changes.Push([section, "state", duplicates[stateName]])
+                result["repointedRules"] += 1
             }
         }
-
-        if duplicates.Has(this.DefaultState) {
-            IniWrite(duplicates[this.DefaultState], this.Path, "general", "defaultState")
-            this.DefaultState := duplicates[this.DefaultState]
+        for obsolete in [invalid, duplicates] {
+            for stateName in obsolete {
+                changes.Push(["state." stateName])
+                states.Delete(stateName)
+                result["removedStates"] += 1
+            }
         }
-
-        removedStates := 0
-        for stateName in invalid {
-            IniDelete(this.Path, "state." stateName)
-            removedStates += 1
-        }
-        for stateName in duplicates {
-            IniDelete(this.Path, "state." stateName)
-            removedStates += 1
-        }
-        if (removedRules || repointedRules || removedStates)
-            this.Reload()
-        return Map(
-            "removedStates", removedStates,
-            "removedRules", removedRules,
-            "repointedRules", repointedRules
-        )
+        return MapGet(duplicates, this.DefaultState, this.DefaultState)
     }
 
-    FindValidDefaultState(catalog) {
+    FindValidDefaultState(catalog, states) {
         chineseState := ""
         englishState := ""
         firstState := ""
-        for stateName, state in this.NamedStates {
+        for stateName, state in states {
             profileId := StrLower(MapGet(state, "profile", ""))
             if !catalog.Has(profileId)
                 continue
@@ -239,7 +226,7 @@ class KeyPersonaConfig {
         return chineseState != "" ? chineseState : englishState != "" ? englishState : firstState
     }
 
-    EnsureDiscoveredState(profile, imeOpen, suffix, existing) {
+    PlanDiscoveredState(profile, imeOpen, suffix, existing, changes, states) {
         profileId := MapGet(profile, "id", "")
         key := this.DiscoveredStateKey(profileId, imeOpen)
         if existing.Has(key)
@@ -247,24 +234,34 @@ class KeyPersonaConfig {
         stateName := "auto-" StrLower(Fnv1a32(StrLower(profileId)))
         if (suffix != "")
             stateName .= "-" suffix
-        section := "state." stateName
+        baseName := stateName
+        while states.Has(stateName)
+            stateName := baseName "-" A_Index
         description := StrReplace(MapGet(profile, "description", profileId), "`n", " ")
         description := StrReplace(description, "`r", " ")
-        IniWrite(description, this.Path, section, "description")
-        IniWrite("1", this.Path, section, "generated")
-        IniWrite(profileId, this.Path, section, "profile")
-        IniWrite(imeOpen, this.Path, section, "imeOpen")
-        IniWrite("preserve", this.Path, section, "conversion")
-        IniWrite("preserve", this.Path, section, "sentence")
+        state := Map("description", description, "generated", 1, "profile", profileId, "imeOpen", imeOpen,
+            "conversion", "preserve", "sentence", "preserve")
+        section := "state." stateName
+        for field, value in state
+            changes.Push([section, field, value])
+        states[stateName] := state
         existing[key] := true
         return 1
     }
 
-    DiscoveredStateKey(profileId, imeOpen) {
+    DiscoveredStateKey(profileId, imeOpen, conversion := "preserve", sentence := "preserve") {
         normalizedOpen := StrLower(Trim(imeOpen ""))
         if (normalizedOpen != "0" && normalizedOpen != "1")
             normalizedOpen := "preserve"
-        return StrLower(Trim(profileId "")) "|" normalizedOpen
+        return StrLower(Trim(profileId "")) "|" normalizedOpen "|"
+            . KeyPersonaConfig.NormalizeMode(conversion) "|" KeyPersonaConfig.NormalizeMode(sentence)
+    }
+
+    static NormalizeMode(value) {
+        value := StrLower(Trim(value ""))
+        if IsNumber(value)
+            return Integer(value) ""
+        return value = "" || value = "unknown" ? "preserve" : value
     }
 
     LoadPrefixedSections(prefix) {

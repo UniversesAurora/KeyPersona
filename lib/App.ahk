@@ -9,25 +9,17 @@ class KeyPersonaApp {
             LegacyMigration.MigrateRuntimeFiles(baseDir)
         this.Config := KeyPersonaConfig(baseDir, observeOnly)
         this.Logger := Logger(this.Config.LogPath, this.Config.LogLevel)
-        this.Startup := StartupManager(this.Logger)
-        this.Identity := WindowIdentity(this.Config, this.Logger)
-        this.Profiles := InputProfiles(this.Identity, this.Config, this.Logger)
-        catalogResult := this.Config.ReconcileDiscoveredStates(
-            this.Profiles.Catalog, this.Profiles.LastRefreshSucceeded
-        )
-        this.SyncedProfileRevision := this.Profiles.Revision
-        this.LogCatalogResult(catalogResult)
-        this.Mode := ImeMode(this.Identity, this.Config, this.Logger)
         this.Startup := StartupManager(this.Logger, this.Config.RunAsAdmin)
         this.Rules := RuleEngine(this.Config, this.Logger)
+        this.Identity := WindowIdentity(this.Config, this.Rules)
+        this.Profiles := InputProfiles(this.Identity, this.Logger)
+        this.SyncedProfileRevision := -1
+        this.ProfileSyncInProgress := false
+        this.FailedProfileRevision := -1
+        this.ProfileCleanupRevision := -1
+        this.ProfileSyncCallback := ObjBindMethod(this, "RefreshInputProfiles")
+        this.Mode := ImeMode(this.Identity, this.Config)
         this.Store := StateStore(this.Config.StatePath, this.Logger)
-        removedRecords := catalogResult["authoritative"]
-            ? this.Store.RemoveInvalidProfiles(catalogResult["validProfiles"]) : 0
-        if removedRecords {
-            this.Logger.Info("Removed " removedRecords " remembered state(s) for unavailable input profiles")
-            this.Store.Flush()
-        }
-        this.Enabled := this.Config.Enabled
         this.CurrentWindow := Map()
         this.CurrentState := Map()
         this.CurrentRule := Map()
@@ -73,9 +65,9 @@ class KeyPersonaApp {
             this.Logger.Warn("Control focus events unavailable; using foreground events and timed checks")
         this.Started := true
         this.Logger.Info(AppInfo.Name " started" (this.ObserveOnly ? " in observe-only mode" : ""))
-        this.Tray.Refresh(true)
-        if this.Enabled
-            this.QueueWindowCheck()
+        this.SyncDiscoveredProfiles()
+        this.Punctuation.RefreshBindings()
+        this.QueueWindowCheck()
     }
 
     OnWinEventMessage(wParam, lParam, message, receiverHwnd) {
@@ -199,10 +191,6 @@ class KeyPersonaApp {
             if (savedState.Count && !HasKnownProfile(savedState))
                 this.Logger.Debug("Ignored saved state with unknown profile for " MapGet(windowInfo, "exe", ""))
             defaultState := this.Config.GetNamedState(this.Config.DefaultState)
-            if !defaultState.Count {
-                this.Logger.Warn("Unknown defaultState '" this.Config.DefaultState "'; falling back to English US")
-                defaultState := this.Config.GetNamedState("english-us")
-            }
         }
         desired := KeyPersonaApp.ChooseDesiredState(
             remember, sessionState, savedState, matchedRule, defaultState)
@@ -289,7 +277,7 @@ class KeyPersonaApp {
             after := MapGet(actual, field, "unknown")
             if (after = "unknown")
                 merged[field] := before
-            else if (before != "unknown" && before != after)
+            else if (before != "unknown" && !ModeValuesEqual(before, after))
                 changed := true
         }
         return {state: merged, changed: changed}
@@ -334,7 +322,7 @@ class KeyPersonaApp {
 
     RefreshInputProfiles(*) {
         this.Profiles.RefreshCatalog()
-        return this.SyncDiscoveredProfiles()
+        return this.SyncDiscoveredProfiles(true)
     }
 
     RefreshCurrentStateForMenu(*) {
@@ -380,13 +368,39 @@ class KeyPersonaApp {
         this.CurrentSource := source
     }
 
-    SyncDiscoveredProfiles() {
-        if (this.SyncedProfileRevision = this.Profiles.Revision)
+    SyncDiscoveredProfiles(refreshed := false) {
+        revision := this.Profiles.Revision
+        if this.ObserveOnly || this.ShuttingDown || this.ProfileSyncInProgress || this.SyncedProfileRevision = revision
+            || (!refreshed && (this.FailedProfileRevision = revision || this.ProfileCleanupRevision = revision))
             return 0
-        result := this.Config.ReconcileDiscoveredStates(
-            this.Profiles.Catalog, this.Profiles.LastRefreshSucceeded
-        )
-        this.SyncedProfileRevision := this.Profiles.Revision
+        if this.ProfileCleanupRevision != revision && this.Profiles.LastRefreshSucceeded && this.CatalogMissingSavedProfile() {
+            this.ProfileCleanupRevision := revision
+            SetTimer(this.ProfileSyncCallback, -3000)
+            return 0
+        }
+        this.ProfileSyncInProgress := true
+        try return this.ReconcileProfileRevision(revision)
+        catch Error as failure {
+            this.FailedProfileRevision := revision
+            this.Logger.Error("Could not update input profile settings: " failure.Message)
+            SetTimer(this.ProfileSyncCallback, -10000)
+            return 0
+        } finally this.ProfileSyncInProgress := false
+    }
+
+    CatalogMissingSavedProfile() {
+        catalog := this.Profiles.Catalog
+        for entries in [this.Config.NamedStates, this.Store.Records] {
+            for _, state in entries {
+                if !catalog.Has(StrLower(MapGet(state, "profile", "")))
+                    return true
+            }
+        }
+        return false
+    }
+
+    ReconcileProfileRevision(revision) {
+        result := this.Config.ReconcileDiscoveredStates(this.Profiles.Catalog, this.Profiles.LastRefreshSucceeded)
         removedRecords := result["authoritative"]
             ? this.Store.RemoveInvalidProfiles(result["validProfiles"]) : 0
         removedRuntime := result["authoritative"]
@@ -399,14 +413,14 @@ class KeyPersonaApp {
         if removedRecords
             this.ScheduleFlush()
         if policyChanged {
-            this.ProfilePolicyRefreshNeeded := true
-            if this.CurrentWindow.Count {
-                this.CurrentRule := this.MatchRule(this.CurrentWindow)
-                desired := this.SelectDesiredState(this.CurrentWindow, this.CurrentRule)
-                this.CurrentSource := MapGet(desired, "source", "")
-            }
+            this.InputPolicyRefreshNeeded := true
+            this.QueueWindowCheck()
         }
         this.LogCatalogResult(result, removedRecords)
+        this.SyncedProfileRevision := revision
+        this.FailedProfileRevision := -1
+        this.ProfileCleanupRevision := -1
+        SetTimer(this.ProfileSyncCallback, 0)
         return result["added"] + result["removedStates"] + result["removedRules"]
             + result["repointedRules"] + removedRecords + removedRuntime
     }
@@ -836,6 +850,7 @@ class KeyPersonaApp {
         try SetTimer(this.ConfirmCallback, 0)
         try SetTimer(this.PollCallback, 0)
         try SetTimer(this.FlushCallback, 0)
+        try SetTimer(this.ProfileSyncCallback, 0)
         try this.Hook.Stop()
         try OnMessage(KeyPersonaApp.EVENT_MESSAGE, this.MessageCallback, 0)
         try this.Punctuation.Dispose()

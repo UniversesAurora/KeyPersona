@@ -7,9 +7,8 @@ class InputProfiles {
     static CATEGORY_KEYBOARD := "{34745C63-B2F0-4784-8B67-5E12C8701A31}"
     static ENABLED_PROFILE_SIZE := 584 ; LAYOUTORTIPPROFILE
 
-    __New(identity, config, logger) {
+    __New(identity, logger) {
         this.Identity := identity
-        this.Config := config
         this.Logger := logger
         this.Catalog := Map()
         this.ByLanguage := Map()
@@ -29,6 +28,8 @@ class InputProfiles {
         this.LastCatalogRefreshTick := TickCount64()
         try catalog := this.ReadEnabledProfiles()
         catch Error as err {
+            if this.LastRefreshSucceeded
+                this.Revision += 1
             this.LastRefreshSucceeded := false
             this.Logger.Warn("Input profile discovery failed: " err.Message)
             if !this.Catalog.Count {
@@ -40,8 +41,22 @@ class InputProfiles {
             }
             return
         }
+        becameAuthoritative := !this.LastRefreshSucceeded
         this.LastRefreshSucceeded := true
-        this.SetCatalog(catalog)
+        if becameAuthoritative || !this.SameCatalog(catalog)
+            this.SetCatalog(catalog)
+    }
+
+    SameCatalog(catalog) {
+        if this.Catalog.Count != catalog.Count
+            return false
+        for id, profile in catalog {
+            previous := MapGet(this.Catalog, id, Map())
+            if !previous.Count || profile["kind"] != previous["kind"] || profile["description"] != previous["description"]
+                || MapGet(profile, "layoutCode", -1) != MapGet(previous, "layoutCode", -1)
+                return false
+        }
+        return true
     }
 
     SetCatalog(catalog) {
@@ -55,7 +70,7 @@ class InputProfiles {
         this.Catalog := catalog
         this.ByLanguage := byLanguage
         this.Revision += 1
-        this.Logger.Info("Discovered " catalog.Count " enabled input profile(s)")
+        this.Logger.Debug("Discovered " catalog.Count " enabled input profile(s)")
     }
 
     ReadEnabledProfiles() {
@@ -236,7 +251,7 @@ class InputProfiles {
         langId := hkl & 0xFFFF
         profile := this.ResolveProfileForLanguage(langId, hkl)
         catalogKey := profile.Count ? StrLower(profile["id"]) : ""
-        if ((!profile.Count || !this.Catalog.Has(catalogKey))
+        if (allowRefresh && (!profile.Count || !this.Catalog.Has(catalogKey))
             && TickCount64() - this.LastCatalogRefreshTick >= 30000) {
             this.RefreshCatalog()
             profile := this.ResolveProfileForLanguage(langId, hkl)
@@ -244,35 +259,50 @@ class InputProfiles {
         return Map(
             "profile", profile.Count ? profile["id"] : Hex(langId, 4) ":unknown",
             "kind", profile.Count ? profile["kind"] : "unknown",
-            "langId", Hex(langId, 4),
+            "langId", Hex(profile.Count ? profile["langId"] : langId, 4),
             "hkl", "0x" Hex(hkl)
         )
     }
 
     ResolveProfileForLanguage(langId, hkl) {
         langKey := Hex(langId, 4)
-        candidates := MapGet(this.ByLanguage, langKey, [])
+        candidates := InputProfiles.IsTransientLanguage(langId) ? [] : MapGet(this.ByLanguage, langKey, [])
         keyboard := Map()
-        for candidate in candidates {
+        ambiguousKeyboard := false
+        layoutCandidates := InputProfiles.IsTransientLanguage(langId) ? this.Catalog : candidates
+        for _, candidate in layoutCandidates {
             if (candidate["kind"] = "tip" || !InputProfiles.MatchesKeyboardLayout(candidate, hkl))
                 continue
-            if (candidate["kind"] = "ime")
+            if (candidate["kind"] = "ime" && !InputProfiles.IsTransientLanguage(langId))
                 return candidate
             if keyboard.Count {
+                ambiguousKeyboard := true
                 keyboard := Map()
                 break
             }
             keyboard := candidate
         }
+        if keyboard.Count {
+            for candidate in candidates {
+                if candidate["kind"] = "tip" {
+                    active := this.GetActiveProfile()
+                    if (active.Count && (active["substituteHkl"] = hkl
+                        || (active["langId"] = langId && !active["substituteHkl"]
+                            && InputProfiles.KeyboardLayoutId(hkl) = candidate["layoutId"]))) {
+                        return Map()
+                    }
+                    break
+                }
+            }
+            return keyboard
+        }
         active := this.GetActiveProfile()
         legacyHandle := (hkl & 0xF0000000) = 0xE0000000
-        if (active.Count && active["langId"] = langId) {
+        if active.Count {
             substitute := active["substituteHkl"]
-            if (substitute ? substitute = hkl : !legacyHandle)
+            if (substitute ? substitute = hkl : (active["langId"] = langId && !legacyHandle && !ambiguousKeyboard))
                 return MapGet(this.Catalog, StrLower(active["id"]), active)
         }
-        if keyboard.Count
-            return keyboard
         ; A single TIP can use the language's plain carrier HKL.
         if (candidates.Length = 1 && candidates[1]["kind"] = "tip"
             && InputProfiles.KeyboardLayoutId(hkl) = "0000" langKey)
@@ -307,8 +337,14 @@ class InputProfiles {
         return Hex(layout, 8)
     }
 
+    static IsTransientLanguage(langId) {
+        return langId = 0x2000 || langId = 0x2400
+    }
+
     static MatchesKeyboardLayout(profile, hkl) {
-        if (!hkl || (hkl & 0xFFFF) != profile["langId"])
+        langId := hkl & 0xFFFF
+        transient := InputProfiles.IsTransientLanguage(langId)
+        if (!hkl || (!transient && langId != profile["langId"]))
             return false
         layoutId := profile["layoutId"]
         if (InputProfiles.KeyboardLayoutId(hkl) = layoutId)

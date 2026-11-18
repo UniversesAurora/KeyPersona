@@ -112,6 +112,12 @@ StateSignature(state) {
         . StrLower(MapGet(state, "sentence", "unknown"))
 }
 
+ModeValuesEqual(left, right) {
+    if IsNumber(left) && IsNumber(right)
+        return Integer(left) = Integer(right)
+    return left = right
+}
+
 StateMatches(actual, desired) {
     if !IsObject(actual) || !IsObject(desired)
         return false
@@ -123,7 +129,7 @@ StateMatches(actual, desired) {
         wanted := StrLower(MapGet(desired, field, "unknown") "")
         if (wanted = "" || wanted = "unknown" || wanted = "preserve")
             continue
-        if (StrLower(MapGet(actual, field, "unknown") "") != wanted)
+        if !ModeValuesEqual(StrLower(MapGet(actual, field, "unknown") ""), wanted)
             return false
     }
     return true

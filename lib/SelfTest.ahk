@@ -12,6 +12,8 @@ RunSelfTests(baseDir) {
     desired := Map("profile", "0409:00000409", "imeOpen", "unknown", "conversion", "preserve", "sentence", "preserve")
     actual := Map("profile", "0409:00000409", "imeOpen", "unknown", "conversion", "unknown", "sentence", "unknown")
     AssertTest(StateMatches(actual, desired), "State wildcard comparison", failures)
+    AssertTest(StateMatches(Map("conversion", "0x9"), Map("conversion", "9")),
+        "Equivalent mode flags match across number formats", failures)
     AssertTest(HasKnownProfile(actual), "Known profile detection", failures)
     AssertTest(!HasKnownProfile(Map("profile", "unknown")), "Plain unknown profile rejection", failures)
     AssertTest(!HasKnownProfile(Map("profile", "0000:unknown")), "Qualified unknown profile rejection", failures)
@@ -295,8 +297,15 @@ RunSelfTests(baseDir) {
     IniWrite("invalid.exe", reloadedConfig.Path, "rule.invalid-input", "exe")
     IniWrite("invalid-input", reloadedConfig.Path, "rule.invalid-input", "state")
     IniWrite("invalid-input", reloadedConfig.Path, "general", "defaultState")
+    reloadedConfig.WriteChanges([["state.custom-a", "profile", discoveredKeyboardId],
+        ["state.custom-a", "conversion", "0x1"], ["state.custom-b", "profile", discoveredKeyboardId],
+        ["state.custom-b", "conversion", "0x9"], ["rule.custom", "exe", "custom.exe"],
+        ["rule.custom", "state", "custom-b"]])
     reloadedConfig.Reload()
     invalidReconcile := reloadedConfig.ReconcileDiscoveredStates(discoveredCatalog)
+    AssertTest(reloadedConfig.GetNamedState("custom-a")["conversion"] = "0x1"
+        && RuleEngine(reloadedConfig, testLogger).Match(Map("exe", "custom.exe"))["state"]["conversion"] = "0x9",
+        "Distinct custom modes survive reconciliation", failures)
     AssertTest(invalidReconcile["removedStates"] = 1 && invalidReconcile["removedRules"] = 1,
         "Unavailable input state and rule are removed", failures)
     AssertTest(invalidReconcile["defaultChanged"]
@@ -394,6 +403,7 @@ RunSelfTests(baseDir) {
     AssertTest(terminalRule.Count && terminalRule["stateName"] = "english-us", "User rule matching", failures)
     FileAppend("persistence-rules-ok`n", progressPath, "UTF-8")
 
+    TestProfileSyncRetry(tempConfigDir, discoveredCatalog, testLogger, failures)
     TestInputRestoration(testConfig, testLogger, failures)
     TestAppInputPolicy(testConfig, testLogger, failures)
     identityApi := WindowIdentity(testConfig, testLogger)
@@ -409,7 +419,7 @@ RunSelfTests(baseDir) {
             "Tray overflow surface ignored", failures)
     }
     FileAppend("window-ok`n", progressPath, "UTF-8")
-    profileApi := InputProfiles(identityApi, testConfig, testLogger)
+    profileApi := InputProfiles(identityApi, testLogger)
     AssertTest(profileApi.LastRefreshSucceeded && profileApi.Catalog.Count >= 1, "Windows enabled profile discovery", failures)
     FileAppend("profiles-ok count=" profileApi.Catalog.Count "`n", progressPath, "UTF-8")
     if window.Count {
@@ -431,6 +441,99 @@ RunSelfTests(baseDir) {
     }
     FileAppend("SELF-TEST PASSED`n", progressPath, "UTF-8")
     return 0
+}
+
+TestProfileSyncRetry(baseDir, catalog, logger, failures) {
+    config := ProfileSyncConfigProbe(baseDir)
+    savedProfileId := "0404:00000404"
+    profileId := "040c:0000040c"
+    newCatalog := catalog.Clone()
+    newCatalog[profileId] := Map("id", profileId, "kind", "keyboard", "langId", 0x040C, "description", "French")
+    config.WriteChanges([["state.removed-for-sync", "profile", savedProfileId],
+        ["rule.removed-for-sync", "exe", "sync-fixture.exe"], ["rule.removed-for-sync", "state", "removed-for-sync"]])
+    config.Reload()
+    original := FileRead(config.Path, "UTF-8")
+    config.WriteAttempts := 0
+    app := ProfileSyncAppProbe(config, newCatalog, logger)
+    try {
+        app.SyncDiscoveredProfiles()
+        app.SyncDiscoveredProfiles()
+        AssertTest(!config.WriteAttempts && app.ProfileCleanupRevision = 1,
+            "A single catalog snapshot cannot remove a saved profile", failures)
+        recoveredCatalog := catalog.Clone()
+        recoveredCatalog[savedProfileId] := Map("id", savedProfileId, "kind", "keyboard", "langId", 0x0404)
+        app.NextCatalog := recoveredCatalog
+        app.RefreshInputProfiles()
+        AssertTest(!config.WriteAttempts && app.SyncedProfileRevision = 2
+            && config.GetNamedState("removed-for-sync").Count && FileRead(config.Path, "UTF-8") == original,
+            "A temporarily missing profile keeps its state and rule", failures)
+
+        config.FailNextWrite := true
+        app.NextCatalog := newCatalog
+        app.RefreshInputProfiles()
+        app.RefreshInputProfiles()
+        app.SyncDiscoveredProfiles()
+        AssertTest(config.WriteAttempts = 1 && app.SyncedProfileRevision = 2
+            && FileRead(config.Path, "UTF-8") == original,
+            "Failed profile reconciliation leaves the complete config intact and does not retry on a hot-path read", failures)
+        app.RefreshInputProfiles()
+        app.RefreshInputProfiles()
+        AssertTest(config.WriteAttempts = 2 && app.SyncedProfileRevision = 3 && app.RuleRefreshes = 1
+            && !config.GetNamedState("removed-for-sync").Count
+            && !config.Doc.Get("rule.removed-for-sync", "state", "")
+            && config.GetNamedState("auto-" StrLower(Fnv1a32(profileId)))["profile"] = profileId,
+            "The same catalog revision is retried and applied in a single config write", failures)
+    } finally SetTimer(app.ProfileSyncCallback, 0)
+}
+
+class ProfileSyncConfigProbe extends KeyPersonaConfig {
+    FailNextWrite := false
+    WriteAttempts := 0
+
+    WriteChanges(changes) {
+        this.WriteAttempts += 1
+        if this.FailNextWrite {
+            this.FailNextWrite := false
+            throw Error("Simulated temporary config write failure")
+        }
+        super.WriteChanges(changes)
+    }
+}
+
+class ProfileSyncAppProbe extends KeyPersonaApp {
+    __New(config, catalog, logger) {
+        this.Config := config
+        this.Logger := logger
+        this.Profiles := this
+        this.Catalog := catalog
+        this.NextCatalog := 0
+        this.Revision := 1
+        this.LastRefreshSucceeded := true
+        this.Store := this
+        this.Records := Map()
+        this.ObserveOnly := false
+        this.ShuttingDown := false
+        this.SyncedProfileRevision := -1
+        this.FailedProfileRevision := -1
+        this.ProfileCleanupRevision := -1
+        this.ProfileSyncInProgress := false
+        this.ProfileSyncCallback := ObjBindMethod(this, "RefreshInputProfiles")
+        this.RuleRefreshes := 0
+    }
+
+    RefreshCatalog() {
+        if this.NextCatalog {
+            this.Catalog := this.NextCatalog
+            this.NextCatalog := 0
+            this.Revision += 1
+        }
+    }
+
+    RemoveInvalidProfiles(validProfiles) => 0
+    RemoveInvalidRuntimeStates(validProfiles) => 0
+    RefreshRuleEngine() => this.RuleRefreshes += 1
+    QueueWindowCheck() {
+    }
 }
 
 TestInputProfilesAndMenu(profiles, config, failures) {
@@ -459,6 +562,8 @@ TestInputProfilesAndMenu(profiles, config, failures) {
     AssertTest(profiles.ResolveProfileForLanguage(0x0804, 0xE0200804)["id"] = legacyId
         && !profiles.ResolveProfileForLanguage(0x0804, 0xE0210804).Count,
         "Legacy IMEs require a matching layout handle", failures)
+    AssertTest(profiles.ResolveProfileForLanguage(0x2000, 0x04092000)["id"] = usId,
+        "A transient LANGID resolves only through matching layout evidence", failures)
     AssertTest(profiles.ResolveProfileForLanguage(0x0409, 0x04090409)["id"] = usId
         && !profiles.ResolveProfileForLanguage(0x0409, 0xF0020409).Count,
         "Keyboard variants are distinguished from the default layout", failures)

@@ -20,8 +20,8 @@ PowerShell 7 只负责执行 `build.ps1`，不是程序运行时的一部分。
 
 1. 为配置目录取得独占运行锁，再迁移旧名称留下的配置、状态和日志。
 2. 读取或创建 `config.ini`。
-3. 枚举当前用户启用的输入 profile，并对账命名状态、规则和自动记忆。
-4. 读取 `state.ini`；文件损坏时尝试读取 `state.ini.bak`。
+3. 枚举当前用户启用的输入 profile，并读取 `state.ini`。主文件缺失或损坏时读取备份。
+4. 迁移自启动入口，核对输入源、命名状态、规则和自动记忆。
 5. 分别订阅 `EVENT_SYSTEM_FOREGROUND` 和 `EVENT_OBJECT_FOCUS`，然后启动托盘菜单。
 6. 前台窗口变化时选择目标状态；实际状态已经符合目标时不发送切换消息。
 
@@ -107,23 +107,24 @@ KeyPersona 在以下时机重新枚举当前用户启用的输入法：
 
 使用 Windows 的 [EnumEnabledLayoutOrTip](https://learn.microsoft.com/windows/win32/tsf/enumenabledlayoutortip) 枚举当前用户的键盘布局和 TSF 输入法，筛掉禁用项，并通过当前用户的 `Keyboard Layout\Preload` 和 `Substitutes` 补充旧式 IME。Google Mozc 也使用这个接口读取 Windows 输入源。[Mozc 实现](https://github.com/google/mozc/blob/master/src/win32/base/uninstall_helper.cc)
 
-输入法名称优先读取系统注册的本地化字符串，用 [SHLoadIndirectString](https://learn.microsoft.com/windows/win32/api/shlwapi/nf-shlwapi-shloadindirectstring) 解析资源引用。没有本地化名称时，TSF 输入法读取 [GetLanguageProfileDescription](https://learn.microsoft.com/windows/win32/api/msctf/nf-msctf-itfinputprocessorprofiles-getlanguageprofiledescription) 或注册描述，普通键盘布局和旧式 IME 读取布局描述。托盘按输入源的语言 ID 分栏，通过 Windows NLS 读取列标题。规则和记忆使用输入源标识。
+输入法名称优先读取系统注册的本地化字符串，用 [SHLoadIndirectString](https://learn.microsoft.com/windows/win32/api/shlwapi/nf-shlwapi-shloadindirectstring) 解析资源引用。没有本地化名称时，TSF 输入法读取 [GetLanguageProfileDescription](https://learn.microsoft.com/windows/win32/api/msctf/nf-msctf-itfinputprocessorprofiles-getlanguageprofiledescription) 或注册描述，普通键盘布局和旧式 IME 读取布局描述。托盘菜单按输入源的语言 ID 从上到下分组，通过 Windows NLS 读取语言标题。规则和记忆使用输入源标识。
 
 自动发现遵循以下规则：
 
 - 中文 IME 生成中文、英文两个模式；日语 IME 生成开启、直接输入两个模式。每个输入源也有一个保留内部模式的状态，便于在不支持模式读写的输入框中使用。
-- 唯一键是完整 profile ID 加规范化后的 `imeOpen`。
+- 以完整 profile ID 和规范化后的 `imeOpen`、`conversion`、`sentence` 判断两个状态是否等效。
 - 已存在同一实际状态时不重复创建。
 - 用户手写状态优先于 `generated=1` 的自动状态；重复项删除后，规则会改指向保留项。
 - profile 已不可用时，删除对应的命名状态、用户规则和自动记忆。
 - 全局默认失效时，依次选择有效中文状态、English US、任一有效状态。
-- 只有 Windows 完成枚举且结果非空时才执行删除。枚举失败时沿用缓存，初次启动时回退到用户语言配置和预加载项。
+- 首次发现已保存的 profile 缺失时，安排一次重新枚举。只有连续两次成功枚举确认输入源目录一致，才删除缺失项。枚举失败时沿用缓存，初次启动时回退到用户语言配置和预加载项。
+- 新增状态、清理失效或重复项、更新规则引用和默认值，通过一次配置写入生效。写入失败时，在下次打开托盘或定时重试时重新枚举并处理。
 
 ### 5.2 读取
 
-KeyPersona 用 `GetKeyboardLayout` 读取前台焦点线程的 HKL。旧式 IME 按准确的布局句柄匹配；TSF 输入法结合活动 profile、语言和替代布局判断。无法区分同一语言下的多个 TSF 输入法时将读数标为未知。持久化保存 TSF 完整标识或 `LANGID:KLID`。
+KeyPersona 用 `GetKeyboardLayout` 读取前台焦点线程的 HKL。旧式 IME 按准确的布局句柄匹配。TSF 输入法结合活动 profile、语言和替代布局判断。键盘布局与 TSF 证据冲突时返回未知。临时语言 ID 只在有可匹配的布局句柄时解析，持久化使用输入源的登记标识。持久化保存 TSF 完整标识或 `LANGID:KLID`。
 
-对微信输入法和兼容 IME，内部模式通过 `ImmGetDefaultIMEWnd` 和 `WM_IME_CONTROL` 读取。在已验证的 Windows Terminal 场景中，`ImmGetContext` 可能返回空，而 default IME window 仍能读写 open status，因此实现不能只依赖 `ImmGetContext`。
+对微信输入法和兼容 IME，内部模式通过 `ImmGetDefaultIMEWnd` 和 `WM_IME_CONTROL` 读取。普通采样主要读取开闭模式。日语输入法、显式配置转换或句子模式的输入源，以及正在观察这些已知模式的窗口，会额外读取模式标志。在已验证的 Windows Terminal 场景中，`ImmGetContext` 可能返回空，而 default IME window 仍能读写 open status，因此实现不能只依赖 `ImmGetContext`。
 
 ### 5.3 恢复
 
