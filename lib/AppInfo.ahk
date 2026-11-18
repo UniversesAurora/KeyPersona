@@ -3,7 +3,7 @@
 ; Product identity and artifact names live here so renaming stays localized.
 ;@Ahk2Exe-SetName KeyPersona
 ;@Ahk2Exe-SetDescription KeyPersona
-;@Ahk2Exe-SetVersion 1.3.0
+;@Ahk2Exe-SetVersion 1.4.0
 ;@Ahk2Exe-SetMainIcon %A_ScriptDir%\assets\KeyPersona.ico
 ;@Ahk2Exe-AddResource %A_ScriptDir%\assets\GitHub-Invertocat.ico, 1001
 ;@Ahk2Exe-SetCopyright Copyright (c) 2026 浮枕
@@ -28,7 +28,7 @@ class AppInfo {
     static Author := "浮枕"
     static AuthorHandle := "@universesaurora"
     static AuthorUrl := "https://github.com/UniversesAurora"
-    static Version := "1.3.0"
+    static Version := "1.4.0"
 
     ; Retained only so existing installations migrate without losing settings.
     static LegacyLogFiles := ["ime-memory.log"]
