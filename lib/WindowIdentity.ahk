@@ -1,13 +1,98 @@
 #Requires AutoHotkey v2.0
 
 class WindowIdentity {
-    __New(config, logger) {
+    __New(config, rules := 0) {
         this.Config := config
-        this.Logger := logger
+        this.Rules := rules
         this.CurrentPid := DllCall("kernel32\GetCurrentProcessId", "UInt")
     }
 
-    Resolve(hwnd := 0) {
+    Resolve(hwnd := 0, &pending := unset) {
+        windowInfo := this.ReadWindowInfo(hwnd, &pending)
+        if !windowInfo.Count
+            return windowInfo
+
+        selector := windowInfo["classSelector"]
+        useOnlyClass := selector != "" && this.Rules && this.Rules.ClassOnlyRules.Length
+            && this.Rules.Match(windowInfo, true).Count
+        if !useOnlyClass
+            this.ReadProcessIdentity(windowInfo)
+
+        if windowInfo["exe"] = "" && selector != "" && (useOnlyClass
+            || (this.Rules && this.Rules.Match(windowInfo).Count)
+            || this.Config.AppInputPolicies.Has(StrLower(selector)))
+            windowInfo["exe"] := selector
+
+        exe := windowInfo["exe"]
+        if !this.IsWindowVisible(windowInfo["hwnd"]) {
+            pending := windowInfo
+            return Map()
+        }
+        if this.IsIgnored(exe, windowInfo["class"])
+            return Map()
+        if exe = "" {
+            pending := windowInfo
+            return Map()
+        }
+        return this.AssignIdentity(windowInfo)
+    }
+
+    AssignIdentity(windowInfo) {
+        exe := windowInfo["exe"]
+        normalizedTitle := this.NormalizeTitle(exe, windowInfo["title"])
+        mode := this.IsWindowMode(exe) ? "window" : "app"
+        packageFamily := MapGet(windowInfo, "packageFamily", "")
+        appSelector := WindowIdentity.AppSelector(exe, packageFamily)
+        sharedIdentity := StrLower(exe)
+        pathIdentity := this.Rules && this.Rules.UsesPathIdentity(windowInfo) ? "path:" StrLower(windowInfo["path"]) : ""
+        binding := packageFamily = "" && this.Config.AppIdentitiesByPath.Count
+            ? MapGet(this.Config.AppIdentitiesByPath, KeyPersonaConfig.AppPathKey(windowInfo["path"]), 0) : 0
+        appId := binding && binding.enabled ? binding.id : ""
+        inheritedIdentity := ""
+        if appId != "" {
+            appSelector := "app:" appId
+            appIdentity := appSelector
+            inheritedIdentity := sharedIdentity
+        } else if packageFamily != "" {
+            appIdentity := "package:" appSelector
+            inheritedIdentity := pathIdentity != "" ? pathIdentity : sharedIdentity
+        } else {
+            appIdentity := pathIdentity != "" ? pathIdentity : sharedIdentity
+        }
+        suffix := ""
+        if mode = "window"
+            suffix := "|" StrLower(windowInfo["class"]) "|" StrLower(normalizedTitle)
+        windowInfo["normalizedTitle"] := normalizedTitle
+        windowInfo["mode"] := mode
+        windowInfo["appSelector"] := appSelector
+        windowInfo["appIdentity"] := appIdentity
+        windowInfo["appId"] := appId
+        windowInfo["identityKey"] := appIdentity suffix
+        windowInfo["legacyIdentityKey"] := inheritedIdentity = "" ? "" : inheritedIdentity suffix
+        return windowInfo
+    }
+
+    static AppSelector(exe, packageFamily := "") {
+        return StrLower(packageFamily = "" ? exe : exe "|" packageFamily)
+    }
+
+    static CanIsolateInstallation(windowInfo) {
+        return MapGet(windowInfo, "packageFamily", "") = ""
+            && KeyPersonaConfig.AppPathKey(MapGet(windowInfo, "path", "")) != ""
+    }
+
+    static AppSelectorFor(windowInfo) {
+        return MapGet(windowInfo, "appSelector", StrLower(MapGet(windowInfo, "exe", "")))
+    }
+
+    static AppLabel(windowInfo) {
+        exe := MapGet(windowInfo, "exe", "")
+        family := MapGet(windowInfo, "packageFamily", "")
+        return family = "" ? exe : exe " · " RegExReplace(family, "_[^_]+$")
+    }
+
+    ReadWindowInfo(hwnd := 0, &pending := unset) {
+        pending := Map()
         if !hwnd
             hwnd := DllCall("user32\GetForegroundWindow", "Ptr")
         if !hwnd || !DllCall("user32\IsWindow", "Ptr", hwnd, "Int")
@@ -19,41 +104,75 @@ class WindowIdentity {
         threadId := DllCall("user32\GetWindowThreadProcessId", "Ptr", root, "UInt*", &pid, "UInt")
         if !pid || pid = this.CurrentPid
             return Map()
-        path := this.QueryProcessPath(pid)
-        if (path = "") {
+        if !this.IsWindowVisible(root) {
+            pending := Map("hwnd", root, "pid", pid, "threadId", threadId)
+            return Map()
+        }
+
+        classText := Buffer(512, 0)
+        classLength := DllCall("user32\GetClassNameW", "Ptr", root, "Ptr", classText, "Int", 256, "Int")
+        rawClass := classLength ? StrGet(classText, classLength, "UTF-16") : ""
+        title := ""
+        try title := WinGetTitle("ahk_id " root)
+        return Map("hwnd", root, "pid", pid, "threadId", threadId, "path", "", "exe", "",
+            "class", this.NormalizeClass(rawClass), "classSelector", rawClass != "" ? "class:" rawClass : "",
+            "title", title)
+    }
+
+    ReadProcessIdentity(windowInfo) {
+        root := windowInfo["hwnd"]
+        path := ""
+        process := DllCall("kernel32\OpenProcess", "UInt", 0x1000, "Int", false, "UInt", windowInfo["pid"], "Ptr")
+        if process {
+            try {
+                path := this.QueryProcessPath(process)
+                windowInfo["packageFamily"] := this.QueryPackageFamily(process)
+            } finally {
+                DllCall("kernel32\CloseHandle", "Ptr", process)
+            }
+        }
+        if path = "" {
             try path := WinGetProcessPath("ahk_id " root)
         }
         exe := ""
-        if (path != "")
+        if path != ""
             SplitPath(path, &exe)
-        if (exe = "") {
+        if exe = "" {
             try exe := WinGetProcessName("ahk_id " root)
         }
-        className := ""
-        title := ""
-        try className := WinGetClass("ahk_id " root)
-        try title := WinGetTitle("ahk_id " root)
-        className := this.NormalizeClass(className)
-        if this.IsIgnored(exe, className, root)
-            return Map()
-        normalizedTitle := this.NormalizeTitle(exe, title)
-        mode := this.IsWindowMode(exe) ? "window" : "app"
-        identityKey := StrLower(exe)
-        if (mode = "window")
-            identityKey .= "|" StrLower(className) "|" StrLower(normalizedTitle)
-        return Map(
-            "hwnd", root,
-            "sourceHwnd", hwnd,
-            "pid", pid,
-            "threadId", threadId,
-            "path", path,
-            "exe", exe,
-            "class", className,
-            "title", title,
-            "normalizedTitle", normalizedTitle,
-            "mode", mode,
-            "identityKey", identityKey
-        )
+        windowInfo["path"] := path
+        windowInfo["exe"] := exe
+    }
+
+    IsCurrentWindow(windowInfo) {
+        hwnd := MapGet(windowInfo, "hwnd", 0)
+        if !hwnd
+            return false
+        pid := 0
+        threadId := DllCall("user32\GetWindowThreadProcessId", "Ptr", hwnd, "UInt*", &pid, "UInt")
+        return pid = windowInfo["pid"] && threadId = windowInfo["threadId"]
+    }
+
+    IsTrayWindow(hwnd) {
+        if !hwnd
+            return false
+        if hwnd = A_ScriptHwnd
+            return true
+        try return RegExMatch(WinGetClass("ahk_id " hwnd),
+            "i)^(Shell_(Secondary)?TrayWnd|TopLevelWindowForOverflowXamlIsland|NotifyIconOverflowWindow|XamlExplorerHostIslandWindow)$") > 0
+        return false
+    }
+
+    IsTransientForeground(hwnd) {
+        return !hwnd || this.IsTrayWindow(hwnd) || this.IsInputOverlay(hwnd)
+    }
+
+    IsInputOverlay(hwnd) {
+        if !hwnd
+            return false
+        try return RegExMatch(WinGetClass("ahk_id " hwnd), "i)^(IME|MSCTFIME UI|tooltips_class32)$") > 0
+            || RegExMatch(WinGetProcessName("ahk_id " hwnd), "i)^(TextInputHost|ctfmon)\.exe$") > 0
+        return false
     }
 
     IsWindowMode(exe) {
@@ -65,11 +184,9 @@ class WindowIdentity {
         return false
     }
 
-    IsIgnored(exe, className, hwnd) {
-        if !DllCall("user32\IsWindowVisible", "Ptr", hwnd, "Int")
-            return true
+    IsIgnored(exe, className) {
         exeLower := StrLower(exe)
-        if (exeLower = "explorer.exe" && RegExMatch(className,
+        if ((exeLower = "explorer.exe" || InStr(exeLower, "class:") = 1) && RegExMatch(className,
             "i)^(Progman|WorkerW|Shell_(Secondary)?TrayWnd|TopLevelWindowForOverflowXamlIsland|NotifyIconOverflowWindow|XamlExplorerHostIslandWindow)$"))
             return true
         for item in this.Config.IgnoreExe {
@@ -81,6 +198,10 @@ class WindowIdentity {
                 return true
         }
         return false
+    }
+
+    IsWindowVisible(hwnd) {
+        return DllCall("user32\IsWindowVisible", "Ptr", hwnd, "Int") != 0
     }
 
     NormalizeClass(className) {
@@ -139,18 +260,20 @@ class WindowIdentity {
             && left["focused"] = right["focused"]
     }
 
-    QueryProcessPath(pid) {
-        process := DllCall("kernel32\OpenProcess", "UInt", 0x1000, "Int", false, "UInt", pid, "Ptr")
-        if !process
-            return ""
-        try {
-            chars := 32768
-            pathBytes := Buffer(chars * 2, 0)
-            if DllCall("kernel32\QueryFullProcessImageNameW", "Ptr", process, "UInt", 0, "Ptr", pathBytes, "UInt*", &chars, "Int")
-                return StrGet(pathBytes, chars, "UTF-16")
-            return ""
-        } finally {
-            DllCall("kernel32\CloseHandle", "Ptr", process)
-        }
+    QueryProcessPath(process) {
+        chars := 32768
+        pathBytes := Buffer(chars * 2, 0)
+        if DllCall("kernel32\QueryFullProcessImageNameW", "Ptr", process, "UInt", 0, "Ptr", pathBytes, "UInt*", &chars, "Int")
+            return StrGet(pathBytes, chars, "UTF-16")
+        return ""
+    }
+
+    QueryPackageFamily(process) {
+        ; PACKAGE_FAMILY_NAME_MAX_LENGTH plus the terminating null.
+        chars := 65
+        nameBuffer := Buffer(chars * 2, 0)
+        if DllCall("kernel32\GetPackageFamilyName", "Ptr", process, "UInt*", &chars, "Ptr", nameBuffer, "Int") = 0
+            return StrGet(nameBuffer, "UTF-16")
+        return ""
     }
 }

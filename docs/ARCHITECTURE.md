@@ -66,8 +66,8 @@ profile 层负责区分 English US、微信输入法、微软拼音等输入源�
 输入焦点可能位于子控件、浏览器渲染控件或 WebView2 内部。KeyPersona 使用顶层宿主保存窗口记忆：
 
 1. 通过 `GetAncestor(..., GA_ROOT)` 找到顶层窗口。
-2. 通过 `GetWindowThreadProcessId` 和 `QueryFullProcessImageName` 读取宿主进程路径与 exe 名。
-3. 保存顶层 window class 和标准化标题。
+2. 通过 `GetWindowThreadProcessId` 和 `GetClassNameW` 读取线程、进程 ID 和窗口类名，同时读取标题。
+3. 常规识别用 `QueryFullProcessImageName` 获取路径和 exe。匹配到 `processLookup=0` 的类名规则时只用窗口属性。进程信息不可用时，仅在有匹配规则或显式类名设置的情况下用 `class:类名` 作为应用身份。
 4. 切换或读取输入法时，再用 `GetGUIThreadInfo` 找到当前焦点控件。
 
 这个过程没有针对 Raycast 写特殊分支。只要顶层窗口属于 `Raycast.exe`，通用宿主识别就会得到 `Raycast.exe`；WebView2 子控件不会让整个窗口被识别成 `msedgewebview2.exe`。
@@ -82,12 +82,14 @@ HWND 不写成永久主键。窗口关闭或 Windows 重启后，旧 HWND 没有
 
 跨重启只使用两种 identity mode：
 
-- `app`：规范化后的 exe 文件名。默认模式，同一 exe 的多个窗口共享一条持久记忆。
+- `app`：规范化后的 exe 文件名，或回退和类名识别时的 `class:类名`。同一应用身份的多个窗口共享一条持久记忆。
 - `window`：`exe + class + 标准化标题`。默认用于 Edge、Chrome、Firefox、Explorer 和 Zettlr。
 
-`windowModeExe` 在 `config.ini` 的 `[identity]` 中配置。完整进程路径会作为状态元数据保存，也可以由应用规则的 `pathRegex` 匹配，但它不是默认持久身份的一部分。
+`windowModeExe` 在 `config.ini` 的 `[identity]` 中配置。对打包应用，`GetPackageFamilyName` 从已有的进程查询句柄读取包标识，和 exe 一起构成应用身份。包标识不包含安装版本，应用更新后仍可找到记录。对于没有包标识的进程，若启用的 `path` 或 `pathRegex` 规则匹配，则用完整进程路径替代 exe 文件名。
 
-应用规则不是第三种 identity mode。`[rule.*]` 可以组合 `exe`、`pathRegex`、`classRegex` 和 `titleRegex`；填写的条件必须全部匹配。
+普通程序也可以用 `[app-identity.<id>]` 将精确的 EXE 路径关联到固定身份。启用时，`app:<id>` 优先于普通文件名和原有路径标识。按窗口识别的应用仍在末尾追加类名和标题。路径比较不区分大小写，同一个路径以配置中首条有效登记为准。取消托盘勾选写入 `enabled=0`，原 ID 的配置和学习记录可在再次启用后继续使用。修改路径而保留 ID 时，规则、开关和记忆随 ID 转到新的位置。
+
+`[rule.*]` 支持 `path`、`pathRegex`、`packageFamily`、`exe`、`classRegex` 和 `titleRegex`。应用规则先按路径、包标识、文件名、窗口类名、通配分层。同一规则的全部条件都要匹配。
 
 浏览器没有向普通 Win32 程序提供跨重启稳定的窗口 ID。标题相同的两个浏览器窗口在重启后可能无法区分，这是当前识别策略的边界。
 
@@ -181,11 +183,11 @@ KeyPersona 用 `GetKeyboardLayout` 读取前台焦点线程的 HKL。旧式 IME 
 
 全局或应用的自动记忆关闭时只检查第 3、4 项。没有匹配规则时，该窗口没有自动切换或强制保持目标。已有记忆在重新开启后可继续使用。
 
-`[input-app.*]` 按 exe 名称匹配，支持 `autoMemory=0`（关闭该应用的自动记忆）和 `force=1`（强制保持选定目标）。强制目标在进入窗口时从上述优先级取出，保持完整输入源和已知的中英文开闭模式。强制模式下保留 IME 的其他转换和句子标志。只有当前 profile 与目标相同且需要验证开闭模式时才查询 IME。快照中的未知字段不触发写入。
+`[input-app.*]` 按 exe 匹配，也可加 `packageFamily` 限定包，或用 `appId` 引用独立安装身份。`autoMemory` 和 `autoSwitch` 均支持 `1`（开启）、`0`（关闭）。独立身份未设置的选项先继承仅按 exe 的设置，再取全局值。`force=1` 在该应用允许自动切换时强制保持选定目标。强制目标在进入窗口时从上述优先级取出，保持完整输入源和已知的中英文开闭模式。强制模式下保留 IME 的其他转换和句子标志。只有当前 profile 与目标相同且需要验证开闭模式时才查询 IME。快照中的未知字段不触发写入。
 
 当前窗口用户规则通过托盘创建，保存在 `config.ini`。它绑定当前窗口的持久 `identityKey`，不是 HWND：对 `app` 模式应用，它会覆盖同一 exe；对 `window` 模式应用，它会绑定 `exe + class + 标准化标题`。规则表示没有记忆时的默认值，不是输入法锁。
 
-应用规则选择最高 `priority`。优先级相同时，配置文件中后出现的匹配规则生效。规则可以只按 exe 匹配，也可以用 `pathRegex` 区分同名 EXE 的不同安装路径。
+应用规则按完整路径、准确文件名、窗口类名、通配规则的顺序选择。同一层内取较大的 `priority`，相同时使用后出现的规则。`processLookup=0` 允许跳过进程查询。这时可使用窗口类名、标题和通配规则。
 
 通过托盘设置当前窗口默认输入法时，会清除该窗口已有的自动记忆，让新规则能够立即成为初始值。之后的手动切换仍可重新学习。
 
@@ -260,7 +262,7 @@ KeyPersona 用 `GetKeyboardLayout` 读取前台焦点线程的 HKL。旧式 IME 
 
 `[punctuation]` 保存 `enabled`、`convert.<id>` 和 `pair.<id>`。总开关、每类转换和自动补齐都默认关闭，已有显式设置优先。旧 `[typing] backtickInChinese` 仅在存在时迁移为新总开关和 `convert.backtick`，删除旧键；已有新配置优先，不保留旧配置回退路径。
 
-`[punctuation-app.<名称>]` 使用 `exe` 匹配应用，支持 `enabled`、`convert.<id>` 和 `pair.<id>`。值 `1/0` 分别表示该应用开启/关闭，缺少该键或值为 `inherit` 时使用对应的全局值。应用可以在全局关闭时显式开启转换，也可以关闭全局开启的单项转换。转换和补齐相互独立，修改或取消某项覆盖时保留其他覆盖；最后一项覆盖删除后移除空段。菜单“全部跟随全局”删除整个应用配置段。补齐仍需最终解析的总开关和逐项转换均开启。
+`[punctuation-app.<名称>]` 使用 `exe`、`exe + packageFamily` 或 `appId` 匹配应用，支持 `enabled`、`convert.<id>` 和 `pair.<id>`。值 `1/0` 分别表示该应用开启/关闭。缺少该键或值为 `inherit` 时，独立身份先继承同名 EXE 的设置，再取全局值。应用可以在全局关闭时显式开启转换，也可以关闭全局开启的单项转换。转换和补齐相互独立，修改或取消某项覆盖时保留其他覆盖；最后一项覆盖删除后移除空段。菜单中的继承选项可清除当前应用身份的符号设置。补齐仍需最终解析的总开关和逐项转换均开启。
 
 补齐支持圆括号、方括号、花括号、尖括号、单引号、双引号和反引号；左括号触发成对插入，右括号只输出本身。同字符引号每次按下均插入一对，不追踪文档或跳过已有右符号。编辑器已有补齐时可用应用覆盖关闭 KeyPersona 的补齐。
 

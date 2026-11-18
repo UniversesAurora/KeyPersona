@@ -197,6 +197,7 @@ class KeyPersonaApp {
         desired := this.SelectDesiredState(nextWindow, matchedRule, true)
         this.SetEnforcedTarget(nextWindow, desired)
         this.BeginBurst()
+        this.Logger.Debug("Foreground: " WindowIdentity.AppLabel(nextWindow) " [" nextWindow["mode"] "]"
             . (matchedRule.Count ? " rule=" matchedRule["name"] : ""))
         if this.ObserveOnly || !desired.Count || !this.CanSwitch(nextWindow) {
             if this.CanRemember(nextWindow)
@@ -306,7 +307,16 @@ class KeyPersonaApp {
         windowRule := this.Config.GetWindowRule(windowInfo)
         if windowRule.Count
             return windowRule
+        return this.MatchInheritedRule(windowInfo)
+    }
+
+    MatchInheritedRule(windowInfo) {
         applicationRule := this.Rules.Match(windowInfo)
+        if MapGet(applicationRule, "rank", 0) < 4 {
+            legacyRule := this.Config.GetWindowRule(windowInfo, true)
+            if legacyRule.Count
+                return legacyRule
+        }
         if applicationRule.Count
             applicationRule["scope"] := "application"
         return applicationRule
@@ -314,6 +324,7 @@ class KeyPersonaApp {
 
     RefreshRuleEngine() {
         this.Rules := RuleEngine(this.Config, this.Logger)
+        this.Identity.Rules := this.Rules
     }
 
     ApplyState(windowInfo, desiredState, reason := "restore", focusSignal := false) {
@@ -408,6 +419,9 @@ class KeyPersonaApp {
                 if !KeyPersonaApp.IsSameTopLevelWindow(windowInfo, candidate)
                     windowInfo := Map()
             } else if this.Identity.IsCurrentWindow(this.CurrentWindow) {
+                windowInfo := this.Identity.AssignIdentity(StateClone(this.CurrentWindow))
+                if windowInfo["appIdentity"] != this.CurrentWindow["appIdentity"] && windowInfo.Has("memoryInitialized")
+                    windowInfo.Delete("memoryInitialized")
                 actual := this.CurrentState
                 cached := actual.Count > 0
             }
@@ -742,14 +756,46 @@ class KeyPersonaApp {
         this.SetAppInputOption(exe, "force", mode)
     }
 
+    SetAppPathIsolation(windowInfo, enabled, *) {
         Critical "On"
+        if !this.ValidateMenuTarget(windowInfo) || !WindowIdentity.CanIsolateInstallation(windowInfo)
             return
         path := windowInfo["path"]
         try changed := this.Config.SetPathIsolation(path, enabled)
         catch Error as failure {
-            this.Logger.Error("Could not save input settings for " exe ": " failure.Message)
-            saved := false
+            this.ReportSettingsError(failure)
+            return
         }
+        if !changed
+            return
+        this.RefreshRuleEngine()
+        pathKey := KeyPersonaConfig.AppPathKey(path)
+        affected := []
+        for hwndKey, sessionWindow in this.SessionWindows {
+            if KeyPersonaConfig.AppPathKey(MapGet(sessionWindow, "path", "")) = pathKey
+                affected.Push(hwndKey)
+        }
+        for hwndKey in affected {
+            this.SessionWindows.Delete(hwndKey)
+            if this.SessionStates.Has(hwndKey)
+                this.SessionStates.Delete(hwndKey)
+        }
+        if this.ExplicitApply && KeyPersonaConfig.AppPathKey(MapGet(this.ExplicitApply.window, "path", "")) = pathKey
+            this.ExplicitApply := 0
+        if KeyPersonaConfig.AppPathKey(MapGet(this.CurrentWindow, "path", "")) = pathKey {
+            this.Restore.Cancel()
+            this.CancelInputCheck()
+            this.RestoreInterrupted := false
+            this.ObservationState := Map()
+            this.VerifiedKeyboard := 0
+            this.CandidateSignature := ""
+            this.Enforcement.SetTarget("", Map())
+            this.InputPolicyRefreshNeeded := true
+        }
+        this.Punctuation.RefreshBindings()
+        this.QueueWindowCheck()
+    }
+
     SetAppInputOption(exe, option, mode, *) {
         if this.Config.GetAppInputOption(exe, option) = mode
             return

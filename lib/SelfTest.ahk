@@ -416,6 +416,10 @@ RunSelfTests(baseDir) {
     AssertTest(terminalRule.Count && terminalRule["stateName"] = "english-us", "User rule matching", failures)
     FileAppend("persistence-rules-ok`n", progressPath, "UTF-8")
 
+    TestRuleSpecificity(reloadedConfig, testLogger, failures)
+    TestPackageIdentity(reloadedConfig, testLogger, failures)
+    TestInstallationIdentity(reloadedConfig, testLogger, failures)
+    TestRuleFileOrder(reloadedConfig, testLogger, failures)
     TestProfileSyncRetry(tempConfigDir, discoveredCatalog, testLogger, failures)
     TestInputChangeKeys(failures)
     TestInputRestoration(testConfig, testLogger, failures)
@@ -428,9 +432,9 @@ RunSelfTests(baseDir) {
     if desktop
         AssertTest(!identityApi.Resolve(desktop).Count, "Window resolution ignores the shell desktop", failures)
     if window.Count {
-        AssertTest(identityApi.IsIgnored("explorer.exe", "Shell_SecondaryTrayWnd", window["hwnd"]),
+        AssertTest(identityApi.IsIgnored("explorer.exe", "Shell_SecondaryTrayWnd"),
             "Secondary taskbar surface ignored", failures)
-        AssertTest(identityApi.IsIgnored("explorer.exe", "TopLevelWindowForOverflowXamlIsland", window["hwnd"]),
+        AssertTest(identityApi.IsIgnored("explorer.exe", "TopLevelWindowForOverflowXamlIsland"),
             "Tray overflow surface ignored", failures)
     }
     FileAppend("window-ok`n", progressPath, "UTF-8")
@@ -490,6 +494,214 @@ TestPunctuationBindings(config, failures) {
 class PunctuationBindingProbe extends PunctuationController {
     SetBindingEnabled(rule, enabled) {
         this.Registrations[rule["id"]] := {enabled: enabled}
+    }
+}
+
+TestRuleSpecificity(config, logger, failures) {
+    originalRules := config.RuleSections
+    path := "TestFixture\Game.exe"
+    pathRule := Map("name", "path", "path", path, "state", "english-us", "priority", "-10")
+    filenameRule := Map("name", "filename", "exe", "Game.exe", "state", "english-us", "priority", "100")
+    classRule := Map("name", "class", "exe", "class:FixtureWindow", "state", "english-us",
+        "titleRegex", "^Game$", "priority", "200")
+    globRule := Map("name", "glob", "exe", "G?me*.exe", "state", "english-us", "priority", "500")
+    fallback := Map("name", "fallback", "exe", "*", "state", "english-us", "priority", "300")
+    regexPathRule := Map("name", "regex-path", "pathRegex", "i)^Archive.*game\.exe$", "state", "english-us", "priority", "-20")
+    config.RuleSections := [classRule, fallback, regexPathRule, pathRule, globRule, filenameRule]
+    try {
+        rulesApi := RuleEngine(config, logger)
+        sample := Map("exe", "GAME.EXE", "path", StrLower(path),
+            "classSelector", "class:fixturewindow", "title", "Game")
+        AssertTest(rulesApi.Match(sample)["name"] = "path", "Full path outranks filename, class and wildcard", failures)
+        sample["path"] := "Archive\Game.exe"
+        AssertTest(rulesApi.Match(sample)["name"] = "regex-path", "Path regex participates in the path tier", failures)
+        sample["path"] := "OtherFixture\Game.exe"
+        AssertTest(rulesApi.Match(sample)["name"] = "filename", "Exact filename outranks class and wildcard", failures)
+        sample["exe"] := "GameLauncher.exe"
+        AssertTest(rulesApi.Match(sample)["name"] = "class", "Class outranks wildcard when filename is different", failures)
+        sample["title"] := "Settings"
+        AssertTest(rulesApi.Match(sample)["name"] = "glob", "Filename wildcard is matched after exact selectors", failures)
+        sample["exe"] := ""
+        sample["path"] := ""
+        AssertTest(rulesApi.Match(sample)["name"] = "fallback", "Catch-all accepts an unavailable executable", failures)
+
+        identityApi := ClassIdentityProbe(config, rulesApi)
+        result := identityApi.Resolve()
+        AssertTest(identityApi.ProcessReads = 1 && result["identityKey"] = "class:fixturewindow"
+            && rulesApi.Match(result)["name"] = "class", "Window class still matches when process metadata is unavailable", failures)
+
+        classRule["processLookup"] := "0"
+        identityApi := ClassIdentityProbe(config, RuleEngine(config, logger))
+        identityApi.KnownPath := path
+        result := identityApi.Resolve()
+        AssertTest(!identityApi.ProcessReads && result["identityKey"] = "class:fixturewindow",
+            "An opted-in class rule identifies a window without reading process metadata", failures)
+        identityApi.Title := "Other window"
+        result := identityApi.Resolve()
+        AssertTest(identityApi.ProcessReads = 1 && result["exe"] = "Game.exe",
+            "Class-only lookup honors the rule's title condition", failures)
+        AssertTest(result["identityKey"] = "path:" StrLower(path),
+            "A path rule gives the matched executable its own persistent identity", failures)
+        pathWindow := result
+        identityApi.KnownPath := "Archive\Game.exe"
+        regexWindow := identityApi.Resolve()
+        identityApi.KnownPath := "OtherFixture\Game.exe"
+        ordinaryWindow := identityApi.Resolve()
+        AssertTest(regexWindow["identityKey"] = "path:archive\game.exe" && ordinaryWindow["identityKey"] = "game.exe",
+            "Only matching paths split persistent identities", failures)
+        memory := StateStore(config.StatePath, logger)
+        memory.Upsert(ordinaryWindow, config.GetNamedState("english-us"))
+        AssertTest(memory.Find(ordinaryWindow).Count && !memory.Find(pathWindow).Count,
+            "A path rule does not inherit another executable's filename-based memory", failures)
+        AssertTest(config.SetWindowRule(pathWindow, "english-us")
+            && config.GetWindowRule(pathWindow).Count && !config.GetWindowRule(ordinaryWindow).Count,
+            "Tray overrides do not cross between identical executable names", failures)
+        config.RemoveWindowRule(pathWindow)
+
+        config.RuleSections := [classRule]
+        identityApi := ClassIdentityProbe(config, RuleEngine(config, logger))
+        identityApi.Title := "Other window"
+        AssertTest(!identityApi.Resolve().Count, "Unmatched windows with inaccessible process metadata remain ignored", failures)
+    } finally config.RuleSections := originalRules
+}
+
+TestPackageIdentity(config, logger, failures) {
+    originalRules := config.RuleSections
+    sharedRule := Map("name", "shared", "exe", "Game.exe", "state", "english-us", "priority", "100")
+    scopedRule := Map("name", "preview", "exe", "Game.exe", "state", "wetype-chinese", "packageFamily", "Fixture.Preview_test")
+    config.RuleSections := [scopedRule, sharedRule]
+    identity := ClassIdentityProbe(config, RuleEngine(config, logger))
+    identity.KnownPath := "Fixture\Game.exe"
+    identity.PackageFamily := "Fixture.Stable_test"
+    stable := identity.Resolve()
+    identity.PackageFamily := scopedRule["packageFamily"]
+    preview := identity.Resolve()
+    identity.KnownPath := "UpdatedFixture\Game.exe"
+    updated := identity.Resolve()
+    stableKey := stable["appSelector"]
+    previewKey := preview["appSelector"]
+    try {
+        AssertTest(stable["identityKey"] != preview["identityKey"] && preview["identityKey"] = updated["identityKey"],
+            "Same executable separates package families and survives path changes", failures)
+        AssertTest(identity.Rules.Match(stable)["name"] = "shared" && identity.Rules.Match(preview)["name"] = "preview",
+            "An exact package rule outranks a shared filename rule", failures)
+        memory := StateStore(config.StatePath, logger)
+        memory.Upsert(stable, config.GetNamedState("english-us"))
+        AssertTest(memory.Find(stable).Count && !memory.Find(preview).Count,
+            "Packaged variants do not read each other's learned state", failures)
+        AssertTest(config.SetWindowRule(stable, "english-us") && !config.GetWindowRule(preview).Count,
+            "Tray defaults for packaged variants are independent", failures)
+        config.SetAppInputOption("Game.exe", "force", "1")
+        config.SetAppInputOption(previewKey, "force", "0")
+        config.SetAppInputOption(previewKey, "autoSwitch", "0")
+        config.SetAppPunctuationOption("Game.exe", "", false, "1")
+        config.SetAppPunctuationOption(previewKey, "", false, "0")
+        config.Reload()
+        AssertTest(config.IsAppInputForced(stableKey) && !config.IsAppInputForced(previewKey)
+            && config.GetAppInputOption(previewKey, "autoSwitch") = "0"
+            && config.ResolvePunctuationOption(stableKey) && !config.ResolvePunctuationOption(previewKey),
+            "Package-specific input and symbol options survive reload and override filename defaults", failures)
+    } finally {
+        config.RemoveWindowRule(stable)
+        config.SetAppInputOption("Game.exe", "force", "inherit")
+        config.SetAppInputOption(previewKey, "force", "inherit")
+        config.SetAppInputOption(previewKey, "autoSwitch", "inherit")
+        config.ClearAppPunctuationOptions(previewKey)
+        config.ClearAppPunctuationOptions("Game.exe")
+        config.RuleSections := originalRules
+    }
+}
+
+TestInstallationIdentity(config, logger, failures) {
+    sharedPath := A_Temp "\shared-fixture\Game.exe"
+    path := A_Temp "\separate-fixture\Game.exe"
+    movedPath := A_Temp "\moved-fixture\Game.exe"
+    identity := ClassIdentityProbe(config, RuleEngine(config, logger))
+    identity.KnownPath := sharedPath
+    shared := identity.Resolve()
+    binding := 0
+    try {
+        config.SetWindowRule(shared, "english-us")
+        config.SetAppInputOption("Game.exe", "force", "1")
+        config.SetAppPunctuationOption("Game.exe", "", false, "1")
+        memory := StateStore(config.StatePath ".installation-fixture", logger)
+        memory.Upsert(shared, config.GetNamedState("english-us"))
+        AssertTest(config.SetPathIsolation(path, true), "The tray can register an exact installation", failures)
+        binding := config.AppIdentitiesByPath[KeyPersonaConfig.AppPathKey(path)]
+        AssertTest(RegExMatch(binding.id, "^game-[0-9a-f]{12}$") && !config.SetPathIsolation(StrUpper(path), true),
+            "Generated IDs are readable and equivalent paths reuse one binding", failures)
+        identity.KnownPath := StrUpper(path)
+        isolated := identity.Resolve()
+        selector := isolated["appSelector"]
+        AssertTest(isolated["identityKey"] = "app:" binding.id && memory.Find(shared).Count && !memory.Find(isolated).Count,
+            "An isolated installation cannot read shared learned input", failures)
+        AssertTest(config.GetWindowRule(isolated, true)["stateName"] = "english-us"
+            && config.IsAppInputForced(selector) && config.ResolvePunctuationOption(selector),
+            "An isolated installation inherits shared manual settings", failures)
+
+        config.SetWindowRule(isolated, "wetype-chinese")
+        config.SetAppInputOption(selector, "force", "0")
+        config.SetAppPunctuationOption(selector, "", false, "0")
+        memory.Upsert(isolated, config.GetNamedState("wetype-chinese"))
+        AssertTest(memory.Flush(), "Isolated memory is persistable", failures)
+        memory := StateStore(memory.Path, logger)
+        AssertTest(config.GetWindowRule(isolated)["stateName"] = "wetype-chinese"
+            && !config.IsAppInputForced(selector) && !config.ResolvePunctuationOption(selector),
+            "Scoped manual options use appId and survive reload", failures)
+        AssertTest(config.RemoveWindowRule(isolated) && memory.Find(isolated).Count
+            && identity.Resolve()["identityKey"] = isolated["identityKey"],
+            "Removing an override keeps the installation identity and its memory", failures)
+        config.SetWindowRule(isolated, "wetype-chinese")
+
+        config.SetPathIsolation(path, false)
+        AssertTest(identity.Resolve()["identityKey"] = shared["identityKey"] && config.GetWindowRule(isolated).Count
+            && memory.Find(isolated).Count && config.GetAppInputOption(selector, "force") = "inherit",
+            "Disabled bindings return to sharing and keep stored overrides and memory", failures)
+        config.SetPathIsolation(StrLower(path), true)
+        AssertTest(identity.Resolve()["identityKey"] = isolated["identityKey"] && !config.IsAppInputForced(selector)
+            && !config.ResolvePunctuationOption(selector),
+            "Re-enabling the path reuses its saved ID and options", failures)
+
+        config.WriteChanges([[binding.section, "path", movedPath]])
+        config.Reload()
+        AssertTest(identity.Resolve()["identityKey"] = shared["identityKey"], "Relinked identities release the old path", failures)
+        identity.KnownPath := movedPath
+        moved := identity.Resolve()
+        AssertTest(moved["identityKey"] = isolated["identityKey"] && memory.Find(moved).Count
+            && config.GetWindowRule(moved).Count && !config.IsAppInputForced(selector)
+            && !config.ResolvePunctuationOption(selector),
+            "Changing only the registered path carries the overrides and memory to the new location", failures)
+        identity.PackageFamily := "Fixture.Package_test"
+        packageWindow := identity.Resolve()
+        AssertTest(!WindowIdentity.CanIsolateInstallation(packageWindow) && InStr(packageWindow["identityKey"], "package:") = 1,
+            "Packaged applications keep their package identity", failures)
+    } finally {
+        if binding {
+            config.RemoveWindowRule(Map("identityKey", "app:" binding.id))
+            config.SetAppInputOption("app:" binding.id, "force", "inherit")
+            config.ClearAppPunctuationOptions("app:" binding.id)
+            config.WriteChanges([[binding.section]])
+            config.Reload()
+        }
+        config.RemoveWindowRule(shared)
+        config.SetAppInputOption("Game.exe", "force", "inherit")
+        config.ClearAppPunctuationOptions("Game.exe")
+    }
+}
+
+TestRuleFileOrder(config, logger, failures) {
+    config.WriteChanges([["rule.z-order-fixture", "exe", "rule-order-fixture.exe"],
+        ["rule.z-order-fixture", "state", "english-us"],
+        ["rule.a-order-fixture", "exe", "rule-order-fixture.exe"],
+        ["rule.a-order-fixture", "state", "english-us"]])
+    try {
+        config.Reload()
+        match := RuleEngine(config, logger).Match(Map("exe", "rule-order-fixture.exe"))
+        AssertTest(MapGet(match, "name", "") = "a-order-fixture",
+            "Tied rules use file order instead of alphabetical section names", failures)
+    } finally {
+        config.WriteChanges([["rule.z-order-fixture"], ["rule.a-order-fixture"]])
+        config.Reload()
     }
 }
 
@@ -583,6 +795,39 @@ class ProfileSyncAppProbe extends KeyPersonaApp {
     RemoveInvalidRuntimeStates(validProfiles) => 0
     RefreshRuleEngine() => this.RuleRefreshes += 1
     QueueWindowCheck() {
+    }
+}
+
+class ClassIdentityProbe extends WindowIdentity {
+    __New(config, rulesApi) {
+        super.__New(config, rulesApi)
+        this.ProcessReads := 0
+        this.KnownPath := ""
+        this.PackageFamily := ""
+        this.Title := "Game"
+    }
+
+    ReadWindowInfo(hwnd := 0, &pending := unset) {
+        pending := Map()
+        return Map("hwnd", 1, "pid", 2, "threadId", 3, "path", "", "exe", "",
+            "class", "FixtureWindow", "classSelector", "class:FixtureWindow", "title", this.Title)
+    }
+
+    ReadProcessIdentity(windowInfo) {
+        this.ProcessReads += 1
+        if this.KnownPath {
+            windowInfo["path"] := this.KnownPath
+            windowInfo["exe"] := "Game.exe"
+            windowInfo["packageFamily"] := this.PackageFamily
+        }
+    }
+
+    IsIgnored(exe, className) {
+        return false
+    }
+
+    IsWindowVisible(hwnd) {
+        return true
     }
 }
 

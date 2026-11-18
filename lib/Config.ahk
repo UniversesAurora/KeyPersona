@@ -266,11 +266,11 @@ class KeyPersonaConfig {
 
     LoadPrefixedSections(prefix) {
         result := []
-        for section, values in this.Doc.Sections {
+        for section in this.Doc.SectionOrder {
             if (SubStr(StrLower(section), 1, StrLen(prefix)) != StrLower(prefix))
                 continue
             item := Map("name", SubStr(section, StrLen(prefix) + 1))
-            for key, value in values
+            for key, value in this.Doc.Sections[section]
                 item[key] := value
             result.Push(item)
         }
@@ -325,12 +325,85 @@ class KeyPersonaConfig {
         this.RunAsAdmin := !!enabled
     }
 
+    LoadAppIdentities() {
+        this.AppIdentities := Map()
+        this.AppIdentitiesByPath := Map()
+        for section in this.Doc.SectionOrder {
+            if !RegExMatch(section, "i)^app-identity\.([a-z0-9][a-z0-9_-]*)$", &match)
+                continue
+            path := this.Doc.Get(section, "path", "")
+            pathKey := KeyPersonaConfig.AppPathKey(path)
+            if pathKey = "" || this.AppIdentitiesByPath.Has(pathKey)
+                continue
+            id := StrLower(match[1])
+            SplitPath(pathKey, &exe)
+            binding := {id: id, exe: exe, section: section,
+                enabled: ParseBool(this.Doc.Get(section, "enabled", "1"), true)}
+            this.AppIdentities[id] := binding
+            this.AppIdentitiesByPath[pathKey] := binding
+        }
+    }
+
+    static AppPathKey(path) {
+        path := StrReplace(Trim(path), "/", "\")
+        if InStr(path, "\\?\UNC\") = 1
+            path := "\\" SubStr(path, 9)
+        else if RegExMatch(path, "i)^\\\\\?\\[a-z]:\\")
+            path := SubStr(path, 5)
+        return RegExMatch(path, "i)^(?:[a-z]:\\|\\\\[^\\]+\\[^\\]+\\).+") ? StrLower(path) : ""
+    }
+
+    SetPathIsolation(path, enabled) {
+        pathKey := KeyPersonaConfig.AppPathKey(path)
+        if pathKey = ""
+            return false
+        binding := MapGet(this.AppIdentitiesByPath, pathKey, 0)
+        if binding {
+            if binding.enabled = enabled
+                return false
+            changes := [[binding.section, "enabled", enabled ? "1" : "0"]]
+        } else {
+            if !enabled
+                return false
+            SplitPath(pathKey, , , , &stem)
+            stem := SubStr(Trim(RegExReplace(stem, "[^a-z0-9]+", "-"), "-"), 1, 32)
+            loop {
+                section := "app-identity." (stem = "" ? "app" : stem) "-" Format("{:012x}", Random(0, 0xFFFFFFFFFFFF))
+                if !this.Doc.Sections.Has(section)
+                    break
+            }
+            changes := [[section, "path", path]]
+        }
+        this.WriteChanges(changes)
+        this.Reload()
+        return true
+    }
+
+    ConfiguredAppSelector(values) {
+        appId := StrLower(Trim(MapGet(values, "appId", "")))
+        if appId != "" {
+            binding := MapGet(this.AppIdentities, appId, 0)
+            return binding && binding.enabled ? "app:" appId : ""
+        }
+        exe := Trim(MapGet(values, "exe", ""))
+        return exe = "" ? "" : WindowIdentity.AppSelector(exe, Trim(MapGet(values, "packageFamily", "")))
+    }
+
+    BaseAppSelector(selector) {
+        if InStr(selector, "app:") = 1 {
+            binding := MapGet(this.AppIdentities, SubStr(selector, 5), 0)
+            return binding ? binding.exe : ""
+        }
+        separator := InStr(selector, "|")
+        return separator ? SubStr(selector, 1, separator - 1) : selector
+    }
+
     LoadAppInputPolicies() {
         policies := Map()
         for section, values in this.Doc.Sections {
             if !RegExMatch(section, "i)^input-app\.")
                 continue
-            exe := StrLower(Trim(MapGet(values, "exe", "")))
+            exe := this.ConfiguredAppSelector(values)
             if (exe != "")
                 policies[exe] := Map("section", section,
                     "autoMemory", KeyPersonaConfig.OverrideValue(MapGet(values, "autoMemory", "inherit")),
@@ -393,6 +466,16 @@ class KeyPersonaConfig {
         return true
     }
 
+    static AppSelectorFields(section, selector) {
+        if InStr(selector, "app:") = 1
+            return [[section, "appId", SubStr(selector, 5)]]
+        parts := StrSplit(selector, "|",, 2)
+        changes := [[section, "exe", parts[1]]]
+        if parts.Length = 2
+            changes.Push([section, "packageFamily", parts[2]])
+        return changes
+    }
+
     SetPunctuationEnabled(enabled) {
         this.WriteChanges([["punctuation", "enabled", enabled ? "1" : "0"]])
         this.PunctuationEnabled := !!enabled
@@ -415,7 +498,7 @@ class KeyPersonaConfig {
         for section, values in this.Doc.Sections {
             if !RegExMatch(section, "i)^punctuation-app\.")
                 continue
-            exe := StrLower(Trim(MapGet(values, "exe", "")))
+            exe := this.ConfiguredAppSelector(values)
             if (exe = "")
                 continue
             conversion := Map()
@@ -452,6 +535,16 @@ class KeyPersonaConfig {
         override := this.GetAppPunctuationOption(exe, id, pair)
         if (override != "inherit")
             return !!override
+        return this.GetInheritedPunctuationOption(exe, id, pair)
+    }
+
+    GetInheritedPunctuationOption(exe, id := "", pair := false) {
+        base := this.BaseAppSelector(exe)
+        if base != "" && base != exe {
+            override := this.GetAppPunctuationOption(base, id, pair)
+            if override != "inherit"
+                return !!override
+        }
         if (id = "")
             return this.PunctuationEnabled
         return MapGet(pair ? this.PunctuationPairs : this.PunctuationConvert, id, false)

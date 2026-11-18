@@ -80,6 +80,8 @@ ZIP 中的 `config.example.ini` 是默认配置示例。升级现有安装时不
 
 「当前应用输入法设置」里，自动记忆和自动切换可以分别选择「跟随全局」「开启」「关闭」。应用明确开启或关闭时以应用设置为准。关闭自动记忆后，自动切换只使用匹配的用户规则，已有记忆保留。关闭自动切换后，仍可按自动记忆设置学习手动切换，强制保持暂停。
 
+遇到两个同名 EXE 时，在需要独立保存的程序前台打开「当前应用输入法设置」，勾选「为此安装位置单独保存」。默认输入法、应用开关、符号设置和自动记忆都会使用这一安装位置的独立身份。未单独设置的选项仍可继承同名 EXE 的设置。取消勾选会恢复共享，原先独立保存的配置和记忆可在重新勾选后继续使用。
+
 「强制保持目标输入法」默认关闭。启用后，用当前窗口原本选出的目标继续恢复，优先使用记忆，然后是匹配的规则和可用的全局默认。关闭自动记忆时，匹配的规则可以继续作为强制目标。菜单会显示目标。强制期间，临时切走的输入法不会写入记忆。应用持续拒绝切换时，恢复尝试会逐渐减慢。
 
 ## 中文符号转英文
@@ -90,7 +92,7 @@ ZIP 中的 `config.example.ini` 是默认配置示例。升级现有安装时不
 
 圆括号、方括号、花括号、尖括号、单引号、双引号和反引号各有“自动补齐（全局）”选项。开启后，输入左括号会插入一对符号，并把光标移到中间；输入右括号只插入右括号。引号和反引号每次按下都会插入一对。补齐默认关闭，已经有自动补齐的编辑器可继续使用编辑器自己的功能。
 
-“当前应用符号设置”包含转换开关、逐项符号转换和自动补齐，每项可选“跟随全局”“开启”或“关闭”。同一 exe 的所有窗口共用设置，应用设置优先于对应的全局设置。例如全局关闭，只为某个应用开启转换开关和所需符号，就只会在该应用转换；也可以全局转换某个符号，在指定应用关闭它。
+“当前应用符号设置”包含转换开关、逐项符号转换和自动补齐，每项可继承或单独开启、关闭。同一应用的窗口共用设置，应用设置优先于对应的全局设置。例如全局关闭，只为某个应用开启转换开关和所需符号，就只会在该应用转换；也可以全局转换某个符号，在指定应用关闭它。
 
 转换与补齐分别保存，修改其中一项不会重置另一项。补齐生效时，该应用最终采用的转换开关和对应符号转换也必须开启。“全部跟随全局”会删除该应用的所有符号覆盖设置。所有修改立即生效并保存到 `config.ini`。
 
@@ -166,11 +168,52 @@ exe=Raycast.exe
 state=english-us
 ```
 
-规则还可以使用 `pathRegex`、`classRegex` 和 `titleRegex`。同一规则内填写的条件全部需要匹配。
+应用规则按「完整路径 → 包标识 → 文件名 → 窗口类名 → 通配」匹配。同一层取较大的 `priority`。优先级相同时，使用文件中靠后的规则。支持 `path` 或 `pathRegex`、`packageFamily`、`exe`、`classRegex` 和 `titleRegex`，同一规则里的条件必须全部满足。`exe=game*.exe` 匹配文件名模式，`exe=*` 可做兜底。
+
+对于能读取 Windows 包标识的应用，托盘会显示包名称，并分别保存规则、自动记忆和应用设置。例如 Windows Terminal 和 Windows Terminal Preview 都叫 `WindowsTerminal.exe`，在托盘里可以分别设置。原有同名 exe 的规则和应用设置仍可继承。旧的共享记忆保留在原处，两个版本会各自重新学习。
+
+手动编辑规则时，可以用 `packageFamily` 只匹配预览版。`[input-app.*]` 和 `[punctuation-app.*]` 也支持在 `exe` 之外指定这一字段。
+
+```ini
+[rule.terminal-preview]
+exe=WindowsTerminal.exe
+packageFamily=Microsoft.WindowsTerminalPreview_8wekyb3d8bbwe
+state=wetype-chinese
+```
+
+没有包标识的应用可以用 `path` 或 `pathRegex` 区分同名 EXE。匹配的程序按实际路径单独保存自动记忆和托盘设置的默认输入法。首次启用路径规则时，该路径从独立记录开始，旧的文件名记录仍保留。
+
+托盘的「为此安装位置单独保存」会生成一个固定 ID。程序换目录时，可以修改对应 `[app-identity.*]` 的 `path`，保留段名并重新加载 KeyPersona。设置和记忆会跟着 ID 走。用 `enabled=0` 可暂停这个身份，缺省时启用。
+
+```ini
+[app-identity.tool-b]
+path=<EXE 的完整路径>
+
+[window-rule.tool-b]
+identityKey=app:tool-b
+state=wetype-chinese
+
+[input-app.tool-b]
+appId=tool-b
+autoMemory=1
+```
+
+`[punctuation-app.*]` 也可用 `appId` 引用同一身份。安装路径只需填在对应的 `[app-identity.*]` 段里。
+
+需要按 Windows 窗口类名匹配时，可写 `exe=class:窗口类名`。正常情况下会读取 exe 和路径，让更具体的规则优先生效。若希望只读取窗口属性，可给类名规则加 `processLookup=0`。这时该窗口用类名作为应用身份。不同应用可能共享同一类名，可以再加 `titleRegex` 限定窗口。
+
+```ini
+[rule.game-window]
+exe=class:ExampleGameWindow
+processLookup=0
+state=english-us
+```
+
+可用 AutoHotkey 的 Window Spy 查看 `ahk_class`。源码也提供 `tools/KeyPersona-probe.ahk --class-only`。运行探针后有约两秒半切回目标窗口，类名写入同目录的 `KeyPersona-probe.txt`。窗口识别成功后，输入法切换仍由 Windows 和目标应用处理。
 
 规则决定窗口没有记忆时使用的输入法。以 Windows Terminal 的英语规则为例，首次进入时使用美式键盘，之后可以手动切到中文。启用该应用的强制保持后，程序才会在检测到变化时恢复选定的目标。
 
-通过托盘建立的当前窗口规则保存在 `[window-rule.<短 ID>]`。Edge、Chrome、Firefox、Explorer 和 Zettlr 默认使用 `exe + class + 标准化标题` 作为跨重启身份，其他应用默认按 exe 共享状态。
+通过托盘建立的覆盖规则保存在 `[window-rule.<短 ID>]`。Edge、Chrome、Firefox、Explorer 和 Zettlr 默认使用 `exe + class + 标准化标题` 作为跨重启身份，其他应用默认按 exe 共享状态。
 
 ## 开机自启动
 

@@ -211,6 +211,14 @@ class TrayMenuController {
                 label := "强制目标：" (target.Count ? this.ShortState(target) : "请设置默认输入法规则")
             this.AddStatus(settings, label)
         }
+        if WindowIdentity.CanIsolateInstallation(window) {
+            settings.Add()
+            label := "为此安装位置单独保存"
+            isolated := MapGet(window, "appId", "") != ""
+            settings.Add(label, ObjBindMethod(this.App, "SetAppPathIsolation", window, !isolated))
+            if isolated
+                settings.Check(label)
+            this.AddStatus(settings, window["path"])
         }
         return settings
     }
@@ -262,16 +270,17 @@ class TrayMenuController {
             symbols.Add(groupLabel, category)
         }
         symbols.Add()
-        exe := MapGet(window, "exe", "")
-        appLabel := "当前应用符号设置" (exe != "" ? "（" StrReplace(exe, "&", "&&") "）" : "")
+        exe := WindowIdentity.AppSelectorFor(window)
+        appLabel := "当前应用符号设置" (exe != "" ? "（" StrReplace(WindowIdentity.AppLabel(window), "&", "&&") "）" : "")
         if (exe = "") {
             symbols.Add(appLabel, (*) => 0)
             symbols.Disable(appLabel)
         } else {
             appMenu := Menu()
-            appMenu.Add("全部跟随全局", ObjBindMethod(this, "ClearAppPunctuationOptions", exe))
+            inheritLabel := config.BaseAppSelector(exe) != exe ? "全部继承设置" : "全部跟随全局"
+            appMenu.Add(inheritLabel, ObjBindMethod(this, "ClearAppPunctuationOptions", exe))
             if !config.PunctuationApps.Has(StrLower(exe))
-                appMenu.Check("全部跟随全局")
+                appMenu.Check(inheritLabel)
             appMenu.Add()
             appMenu.Add("转换开关", this.BuildAppPunctuationOptionMenu(exe, "", false))
             appConversion := Menu()
@@ -306,15 +315,17 @@ class TrayMenuController {
     BuildAppPunctuationOptionMenu(exe, id, pair) {
         config := this.App.Config
         override := config.GetAppPunctuationOption(exe, id, pair)
-        globalEnabled := id = "" ? config.PunctuationEnabled
-            : MapGet(pair ? config.PunctuationPairs : config.PunctuationConvert, id, false)
-        inheritLabel := "跟随全局（" (globalEnabled ? "开启" : "关闭") "）"
+        inheritLabel := this.InheritedOptionLabel(exe, config.GetInheritedPunctuationOption(exe, id, pair))
         options := Menu()
         options.Add(inheritLabel, ObjBindMethod(this, "SetAppPunctuationOption", exe, id, pair, "inherit"))
         options.Add("开启", ObjBindMethod(this, "SetAppPunctuationOption", exe, id, pair, "1"))
         options.Add("关闭", ObjBindMethod(this, "SetAppPunctuationOption", exe, id, pair, "0"))
         options.Check(override = "inherit" ? inheritLabel : override ? "开启" : "关闭")
         return options
+    }
+
+    InheritedOptionLabel(exe, enabled) {
+        return (this.App.Config.BaseAppSelector(exe) != exe ? "继承设置" : "跟随全局") "（" (enabled ? "开启" : "关闭") "）"
     }
 
     TogglePunctuation(*) {
