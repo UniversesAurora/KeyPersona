@@ -420,7 +420,7 @@ class KeyPersonaApp {
         if (this.SyncedProfileRevision = this.Profiles.Revision)
             return 0
         result := this.Config.ReconcileDiscoveredStates(
-            this.Profiles.LastRefreshSucceeded ? this.Profiles.Catalog : Map()
+            this.Profiles.Catalog, this.Profiles.LastRefreshSucceeded
         )
         this.SyncedProfileRevision := this.Profiles.Revision
         removedRecords := result["authoritative"]

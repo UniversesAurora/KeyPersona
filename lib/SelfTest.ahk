@@ -175,7 +175,7 @@ RunSelfTests(baseDir) {
         )
     )
     firstReconcile := editableConfig.ReconcileDiscoveredStates(discoveredCatalog)
-    AssertTest(firstReconcile["added"] = 3,
+    AssertTest(firstReconcile["added"] = 5,
         "Discovered input states are generated", failures)
     secondReconcile := editableConfig.ReconcileDiscoveredStates(discoveredCatalog)
     AssertTest(secondReconcile["added"] = 0 && secondReconcile["removedStates"] = 0,
@@ -191,7 +191,7 @@ RunSelfTests(baseDir) {
             generatedKeyboardName := generatedStateName
         }
     }
-    AssertTest(generatedChineseModes = 2, "Chinese TIP gets Chinese and English states", failures)
+    AssertTest(generatedChineseModes = 3, "Chinese TIP gets Chinese, English and profile-only states", failures)
     AssertTest(generatedKeyboardStates = 1, "Keyboard layout gets one generated state", failures)
     IniWrite("Manual Japanese", editableConfig.Path, "state.manual-japanese", "description")
     IniWrite(discoveredKeyboardId, editableConfig.Path, "state.manual-japanese", "profile")

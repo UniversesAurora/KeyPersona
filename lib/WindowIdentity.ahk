@@ -103,18 +103,40 @@ class WindowIdentity {
         return title
     }
 
-    GetFocusTarget(windowInfo) {
+    GetFocusTarget(windowInfo, foreground := false) {
         threadId := MapGet(windowInfo, "threadId", 0)
         root := MapGet(windowInfo, "hwnd", 0)
         if !threadId
-            return Map("hwnd", root, "threadId", 0)
+            return Map("hwnd", root, "threadId", 0, "focused", false)
         size := A_PtrSize = 8 ? 72 : 48
         info := Buffer(size, 0)
         NumPut("UInt", size, info, 0)
-        ok := DllCall("user32\GetGUIThreadInfo", "UInt", threadId, "Ptr", info, "Int")
+        ok := DllCall("user32\GetGUIThreadInfo", "UInt", foreground ? 0 : threadId, "Ptr", info, "Int")
         focusOffset := A_PtrSize = 8 ? 16 : 12
         focus := ok ? NumGet(info, focusOffset, "Ptr") : 0
-        return Map("hwnd", focus ? focus : root, "threadId", threadId)
+        if focus && DllCall("user32\GetAncestor", "Ptr", focus, "UInt", 2, "Ptr") = root {
+            focusThread := DllCall("user32\GetWindowThreadProcessId", "Ptr", focus, "Ptr", 0, "UInt")
+            if focusThread
+                return Map("hwnd", focus, "threadId", focusThread, "focused", true)
+        }
+        return Map("hwnd", root, "threadId", threadId, "focused", false)
+    }
+
+    GetForegroundFocus(windowInfo) {
+        foreground := DllCall("user32\GetForegroundWindow", "Ptr")
+        if !foreground || foreground != MapGet(windowInfo, "hwnd", 0)
+            return Map()
+        return this.GetFocusTarget(windowInfo, true)
+    }
+
+    IsForegroundFocus(windowInfo, focus) {
+        current := this.GetForegroundFocus(windowInfo)
+        return current.Count && WindowIdentity.SameFocus(current, focus)
+    }
+
+    static SameFocus(left, right) {
+        return left["hwnd"] = right["hwnd"] && left["threadId"] = right["threadId"]
+            && left["focused"] = right["focused"]
     }
 
     QueryProcessPath(pid) {

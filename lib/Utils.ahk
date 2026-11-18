@@ -150,12 +150,8 @@ StateLabel(state) {
     if !IsObject(state)
         return "unknown"
     profile := MapGet(state, "profile", "unknown")
-    open := MapGet(state, "imeOpen", "unknown")
-    if (open = "1")
-        return profile "（中文）"
-    if (open = "0")
-        return profile "（英文）"
-    return profile
+    mode := ImeMode.ModeLabel(profile, MapGet(state, "imeOpen", "unknown"))
+    return mode = "" ? profile : profile "（" mode "）"
 }
 
 class IniDocument {

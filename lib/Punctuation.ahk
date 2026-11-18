@@ -93,7 +93,8 @@ class PunctuationController {
         if (!window.Count || !this.App.Config.ShouldConvertPunctuation(MapGet(window, "exe", ""), id))
             return false
         profile := this.App.Profiles.Read(window)
-        imeOpen := IsChineseLanguageState(profile) ? this.App.Mode.ReadOpenStatus(window, 30) : "unknown"
+        imeOpen := IsChineseLanguageState(profile) && ImeMode.Supports(MapGet(profile, "kind", ""))
+            ? this.App.Mode.ReadOpenStatus(window, 30) : "unknown"
         return ShouldReplacePunctuationState(profile, imeOpen)
     }
 

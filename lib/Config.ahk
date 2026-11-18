@@ -77,7 +77,7 @@ class KeyPersonaConfig {
         return states
     }
 
-    ReconcileDiscoveredStates(catalog) {
+    ReconcileDiscoveredStates(catalog, authoritative := true) {
         result := Map(
             "added", 0,
             "removedStates", 0,
@@ -89,11 +89,13 @@ class KeyPersonaConfig {
         )
         if !IsObject(catalog) || catalog.Count = 0
             return result
+        result["added"] := this.AddDiscoveredStates(catalog)
+        if !authoritative
+            return result
         for catalogKey, profile in catalog
             result["validProfiles"][StrLower(MapGet(profile, "id", catalogKey))] := true
         result["authoritative"] := true
 
-        result["added"] := this.AddDiscoveredStates(catalog)
         cleanup := this.CleanupDiscoveredStates(result["validProfiles"])
         for field in ["removedStates", "removedRules", "repointedRules"]
             result[field] := cleanup[field]
@@ -124,16 +126,13 @@ class KeyPersonaConfig {
             profileId := MapGet(profile, "id", "")
             if (profileId = "")
                 continue
-            languageState := Map(
-                "profile", profileId,
-                "langId", Hex(MapGet(profile, "langId", 0), 4)
-            )
-            if (MapGet(profile, "kind", "") = "tip" && IsChineseLanguageState(languageState)) {
-                added += this.EnsureDiscoveredState(profile, "1", "chinese", existing)
-                added += this.EnsureDiscoveredState(profile, "0", "english", existing)
-            } else {
-                added += this.EnsureDiscoveredState(profile, "unknown", "", existing)
+            if ImeMode.HasModePresets(profile) {
+                ; Keep the existing Chinese state names for rules and saved defaults.
+                chinese := (profile["langId"] & 0x03FF) = 0x04
+                added += this.EnsureDiscoveredState(profile, "1", chinese ? "chinese" : "ime-on", existing)
+                added += this.EnsureDiscoveredState(profile, "0", chinese ? "english" : "ime-off", existing)
             }
+            added += this.EnsureDiscoveredState(profile, "unknown", "", existing)
         }
         if added
             this.Reload()
