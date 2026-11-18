@@ -13,7 +13,7 @@ class KeyPersonaApp {
         this.Identity := WindowIdentity(this.Config, this.Logger)
         this.Profiles := InputProfiles(this.Identity, this.Config, this.Logger)
         catalogResult := this.Config.ReconcileDiscoveredStates(
-            this.Profiles.LastRefreshSucceeded ? this.Profiles.Catalog : Map()
+            this.Profiles.Catalog, this.Profiles.LastRefreshSucceeded
         )
         this.SyncedProfileRevision := this.Profiles.Revision
         this.LogCatalogResult(catalogResult)
@@ -33,17 +33,16 @@ class KeyPersonaApp {
         this.CurrentSource := ""
         this.SessionStates := Map()
         this.SessionWindows := Map()
-        this.LastSamples := Map()
-        this.StableCounts := Map()
-        this.Suppressions := Map()
-        this.DesiredStates := Map()
-        this.RetryAllowed := Map()
+        this.ObservationState := Map()
+        this.CandidateSignature := ""
+        this.CandidateSince := 0
+        this.Restore := InputRestoration(this)
+        this.Enforcement := InputEnforcement()
         this.ProfilePolicyRefreshNeeded := false
-        this.ApplyGeneration := 0
-        this.ExplicitApplyGeneration := 0
-        this.ForegroundSequence := 0
-        this.PendingForegroundHwnd := 0
-        this.PendingForegroundDue := 0
+        this.ExplicitApply := 0
+        this.ForegroundHwnd := -1
+        this.FocusEventHwnd := 0
+        this.WindowCheckQueued := false
         this.BurstUntil := 0
         this.PollPeriod := 0
         this.Started := false
@@ -52,9 +51,11 @@ class KeyPersonaApp {
         this.EventGui.Title := AppInfo.Name " Event Sink"
         this.EventGui.Show("Hide")
         this.MessageCallback := ObjBindMethod(this, "OnWinEventMessage")
+        this.WindowCallback := ObjBindMethod(this, "HandleWindowEvents")
+        this.ConfirmCallback := ObjBindMethod(this, "ConfirmObservation")
         this.PollCallback := ObjBindMethod(this, "Poll")
         this.FlushCallback := ObjBindMethod(this, "FlushState")
-        this.Hook := ForegroundWinEventHook(this.EventGui.Hwnd, KeyPersonaApp.EVENT_MESSAGE, this.Logger)
+        this.Hook := WindowWinEventHook(this.EventGui.Hwnd, KeyPersonaApp.EVENT_MESSAGE)
         this.Punctuation := PunctuationController(this)
         this.Tray := TrayMenuController(this)
     }
@@ -64,116 +65,121 @@ class KeyPersonaApp {
         catch Error as migrationError
             this.Logger.Error("Startup migration failed: " migrationError.Message)
         OnMessage(KeyPersonaApp.EVENT_MESSAGE, this.MessageCallback)
-        this.Hook.Start()
+        if !this.Hook.Start()
+            this.Logger.Warn("Control focus events unavailable; using foreground events and timed checks")
         this.Started := true
         this.Logger.Info(AppInfo.Name " started" (this.ObserveOnly ? " in observe-only mode" : ""))
         this.Tray.Refresh(true)
-        if this.Enabled {
-            if this.Config.AutoMemory
-                this.SetPollPeriod(this.Config.ActivePollMs)
-            this.QueueForegroundSwitch()
-        }
+        if this.Enabled
+            this.QueueWindowCheck()
     }
 
     OnWinEventMessage(wParam, lParam, message, receiverHwnd) {
         if !this.Enabled || this.ShuttingDown
             return 0
-        this.QueueForegroundSwitch(wParam)
+        if (lParam = WindowWinEventHook.EVENT_SYSTEM_FOREGROUND) {
+            if (wParam != this.ForegroundHwnd) {
+                this.Restore.Cancel()
+                this.CandidateSignature := ""
+            }
+        } else if (lParam = WindowWinEventHook.EVENT_OBJECT_FOCUS) {
+            if !this.Restore.Pending && !this.ExplicitApply && !this.PollPeriod
+                return 0
+            this.FocusEventHwnd := wParam
+        }
+        this.QueueWindowCheck()
         return 0
     }
 
-    QueueForegroundSwitch(eventHwnd := 0, delayMs := "") {
-        if !this.Enabled || this.ShuttingDown
+    QueueWindowCheck() {
+        if this.WindowCheckQueued || !this.Enabled || this.ShuttingDown
             return
-        if !eventHwnd
-            eventHwnd := DllCall("user32\GetForegroundWindow", "Ptr")
-        if !eventHwnd
-            return
-        if (delayMs = "")
-            delayMs := this.Config.ForegroundSettleMs
-        now := TickCount64()
-        if (this.PendingForegroundHwnd = eventHwnd && now < this.PendingForegroundDue)
-            return
-        this.ForegroundSequence += 1
-        sequence := this.ForegroundSequence
-        this.PendingForegroundHwnd := eventHwnd
-        this.PendingForegroundDue := now + delayMs
-        SetTimer(ObjBindMethod(this, "CommitForegroundSwitch", sequence, eventHwnd), -delayMs)
+        this.WindowCheckQueued := true
+        SetTimer(this.WindowCallback, -1)
     }
 
-    CommitForegroundSwitch(sequence, eventHwnd) {
-        if (sequence != this.ForegroundSequence || !this.Enabled || this.ShuttingDown)
+    HandleWindowEvents() {
+        this.WindowCheckQueued := false
+        if !this.Enabled || this.ShuttingDown
             return
-        this.PendingForegroundHwnd := 0
-        this.PendingForegroundDue := 0
         foreground := DllCall("user32\GetForegroundWindow", "Ptr")
-        if (foreground != eventHwnd) {
-            this.QueueForegroundSwitch(foreground)
+        focusEvent := this.FocusEventHwnd
+        this.FocusEventHwnd := 0
+        focusSignal := foreground && focusEvent
+            && (foreground = focusEvent || DllCall("user32\IsChild", "Ptr", foreground, "Ptr", focusEvent, "Int"))
+        if (foreground != this.ForegroundHwnd || this.ProfilePolicyRefreshNeeded) {
+            this.SwitchToForeground(foreground, focusSignal)
             return
         }
-        this.SwitchToForeground(foreground)
+        if !foreground || foreground != MapGet(this.CurrentWindow, "hwnd", 0)
+            return
+        if this.ApplyQueuedSelection(this.CurrentWindow)
+            return
+        if focusSignal && this.Restore.Pending
+            this.Restore.Advance(true)
+        else if focusSignal
+            this.ObserveCurrentWindow()
     }
 
-    SwitchToForeground(eventHwnd := 0) {
-        if !this.Enabled || this.ShuttingDown
+    SwitchToForeground(foreground, focusSignal := false) {
+        previousForeground := this.ForegroundHwnd
+        this.ForegroundHwnd := foreground
+        if (foreground != previousForeground) {
+            this.Restore.Cancel()
+            this.CandidateSignature := ""
+        }
+        nextWindow := foreground ? this.Identity.Resolve(foreground) : Map()
+        if (DllCall("user32\GetForegroundWindow", "Ptr") != foreground) {
+            this.ForegroundHwnd := -1
+            this.QueueWindowCheck()
             return
-        foreground := DllCall("user32\GetForegroundWindow", "Ptr")
-        nextWindow := this.Identity.Resolve(foreground)
-        if !nextWindow.Count
+        }
+        if !nextWindow.Count {
+            this.SetPollPeriod(!foreground && (this.Config.AutoMemory || this.Enforcement.Target.Count)
+                ? this.Config.IdlePollMs : 0)
             return
-        hwnd := nextWindow["hwnd"]
-        currentHwnd := MapGet(this.CurrentWindow, "hwnd", 0)
-        if (currentHwnd = hwnd) {
-            if this.ProfilePolicyRefreshNeeded {
-                this.ProfilePolicyRefreshNeeded := false
-                this.CurrentRule := this.MatchRule(nextWindow)
-                desired := this.SelectDesiredState(nextWindow, this.CurrentRule)
-                this.CurrentSource := MapGet(desired, "source", "")
-                this.BeginBurst()
-                if this.ObserveOnly {
-                    this.CurrentState := this.ReadState(nextWindow)
-                    this.Tray.Refresh(true)
-                } else if !desired.Count {
-                    this.CurrentState := this.ReadState(nextWindow)
-                    this.CurrentSource := "observed"
-                    this.Tray.Refresh(true)
-                } else {
-                    this.ApplyState(nextWindow, desired, "profile-catalog")
-                }
-                return
-            }
+        }
+        sameWindow := KeyPersonaApp.IsSameTopLevelWindow(this.CurrentWindow, nextWindow)
+            && this.CurrentWindow["pid"] = nextWindow["pid"] && this.CurrentWindow["threadId"] = nextWindow["threadId"]
+        if sameWindow && !this.ProfilePolicyRefreshNeeded {
             this.BeginBurst()
+            if !this.ApplyQueuedSelection(this.CurrentWindow)
+                this.ObserveCurrentWindow()
             return
         }
-        hwndKey := hwnd ""
-        if this.SessionWindows.Has(hwndKey) {
-            original := this.SessionWindows[hwndKey]
+        this.ProfilePolicyRefreshNeeded := false
+        hwndKey := nextWindow["hwnd"] ""
+        original := MapGet(this.SessionWindows, hwndKey, Map())
+        if original.Count && original["pid"] = nextWindow["pid"]
+            && original["threadId"] = nextWindow["threadId"] && original["class"] = nextWindow["class"] {
             nextWindow["identityKey"] := original["identityKey"]
             nextWindow["mode"] := original["mode"]
             nextWindow["normalizedTitle"] := original["normalizedTitle"]
         } else {
+            if this.SessionStates.Has(hwndKey)
+                this.SessionStates.Delete(hwndKey)
             this.SessionWindows[hwndKey] := StateClone(nextWindow)
         }
+        this.Restore.Cancel()
+        this.ObservationState := Map()
+        this.CandidateSignature := ""
         this.CurrentWindow := nextWindow
         this.CurrentRule := this.MatchRule(nextWindow)
+        if this.ApplyQueuedSelection(nextWindow)
+            return
         desired := this.SelectDesiredState(nextWindow, this.CurrentRule)
+        this.SetEnforcedTarget(nextWindow, desired)
+        this.BeginBurst()
         this.CurrentSource := MapGet(desired, "source", "")
         this.Logger.Info("Foreground: " nextWindow["exe"] " [" nextWindow["mode"] "]"
             . (this.CurrentRule.Count ? " rule=" this.CurrentRule["name"] : ""))
-        this.BeginBurst()
-        if this.ObserveOnly {
-            this.CurrentState := this.ReadState(nextWindow)
-            this.Tray.Refresh(true)
-            return
-        }
-        if !desired.Count {
-            this.CurrentState := this.ReadState(nextWindow)
-            this.CurrentSource := "observed"
+        if this.ObserveOnly || !desired.Count {
+            this.SetObservationBaseline(nextWindow, this.ReadState(nextWindow), "observed")
             this.Tray.Refresh(true)
             return
         }
         reason := MapGet(desired, "source", "") = "learned" ? "restore" : "default"
-        this.ApplyState(nextWindow, desired, reason)
+        this.ApplyState(nextWindow, desired, reason, focusSignal)
     }
 
     SelectDesiredState(windowInfo, matchedRule) {
@@ -181,7 +187,8 @@ class KeyPersonaApp {
         sessionState := Map()
         savedState := Map()
         defaultState := Map()
-        if this.Config.AutoMemory {
+        remember := this.CanRemember(windowInfo)
+        if remember {
             if this.SessionStates.Has(hwndKey)
                 sessionState := this.SessionStates[hwndKey]
             savedState := this.Store.Find(windowInfo)
@@ -194,8 +201,8 @@ class KeyPersonaApp {
             }
         }
         desired := KeyPersonaApp.ChooseDesiredState(
-            this.Config.AutoMemory, sessionState, savedState, matchedRule, defaultState)
-        if (this.Config.AutoMemory && desired.Count
+            remember, sessionState, savedState, matchedRule, defaultState)
+        if (remember && desired.Count
             && MapGet(desired, "source", "") = "learned")
             this.SessionStates[hwndKey] := StateClone(desired)
         return desired
@@ -245,121 +252,60 @@ class KeyPersonaApp {
         this.Rules := RuleEngine(this.Config, this.Logger)
     }
 
-    ApplyState(windowInfo, desiredState, reason := "restore") {
-        if this.ObserveOnly || !windowInfo.Count || !desiredState.Count
+    ApplyState(windowInfo, desiredState, reason := "restore", focusSignal := false) {
+        if !this.Enabled || this.ShuttingDown || this.ObserveOnly || !windowInfo.Count || !desiredState.Count
             return
-        hwnd := windowInfo["hwnd"]
-        hwndKey := hwnd ""
-        actual := this.ReadState(windowInfo)
-        if !HasKnownProfile(actual) {
-            this.CurrentState := actual
-            this.Logger.Debug("Skip " reason " for " MapGet(windowInfo, "exe", "") ": current profile is unknown")
-            this.Tray.Refresh()
-            return
-        }
-        if StateMatches(actual, desiredState) {
-            this.CurrentState := actual
-            if this.Config.AutoMemory {
-                this.SessionStates[hwndKey] := StateClone(desiredState)
-                this.LastSamples[hwndKey] := StateSignature(actual)
-                this.StableCounts[hwndKey] := 1
-            }
-            this.Logger.Debug("Skip " reason " for " MapGet(windowInfo, "exe", "") ": state already matches")
-            this.Tray.Refresh()
-            return
-        }
-        this.ApplyGeneration += 1
-        generation := this.ApplyGeneration
-        this.DesiredStates[hwndKey] := StateClone(desiredState)
-        this.RetryAllowed[hwndKey] := this.Config.AutoMemory
-            && MapGet(desiredState, "source", "") = "learned"
-        if this.Config.AutoMemory {
-            this.Suppressions[hwndKey] := TickCount64() + this.Config.ApplySuppressMs
-            this.SessionStates[hwndKey] := StateClone(desiredState)
-        }
-        profileChanged := StrLower(MapGet(actual, "profile", "")) != StrLower(MapGet(desiredState, "profile", ""))
-        if profileChanged
-            this.Profiles.Switch(windowInfo, desiredState)
-        delay := profileChanged ? 70 : 10
-        this.Logger.Debug("Apply " reason " to " MapGet(windowInfo, "exe", "") ": " StateLabel(desiredState))
-        SetTimer(ObjBindMethod(this, "FinishApply", generation, hwnd, 0), -delay)
+        this.ObservationState := Map()
+        this.CandidateSignature := ""
+        target := this.Enforcement.Target
+        this.Restore.Begin(windowInfo, target.Count ? target : desiredState,
+            target.Count ? "enforce" : reason, focusSignal)
     }
 
-    FinishApply(generation, hwnd, retryCount) {
-        if (generation != this.ApplyGeneration || this.ShuttingDown)
-            return
-        current := this.Identity.Resolve()
-        if !current.Count || current["hwnd"] != hwnd
-            return
-        hwndKey := hwnd ""
-        if !this.DesiredStates.Has(hwndKey)
-            return
-        desired := this.DesiredStates[hwndKey]
-        profile := this.Profiles.ParseProfile(MapGet(desired, "profile", ""))
-        actualProfile := this.Profiles.Read(current)
-        if (profile.Count && profile["kind"] = "tip"
-            && HasKnownProfile(actualProfile)
-            && StrLower(actualProfile["profile"]) = StrLower(profile["id"]))
-            this.Mode.Apply(current, desired)
-        SetTimer(ObjBindMethod(this, "VerifyApply", generation, hwnd, retryCount), -160)
+    static SameInputProfile(left, right) {
+        return HasKnownProfile(left) && StrLower(MapGet(left, "profile", "")) = StrLower(MapGet(right, "profile", ""))
     }
 
-    VerifyApply(generation, hwnd, retryCount) {
-        if (generation != this.ApplyGeneration || this.ShuttingDown)
-            return
-        current := this.Identity.Resolve()
-        if !current.Count || current["hwnd"] != hwnd
-            return
-        hwndKey := hwnd ""
-        if !this.DesiredStates.Has(hwndKey)
-            return
-        desired := this.DesiredStates[hwndKey]
-        actual := this.ReadState(current)
-        this.CurrentState := actual
-        if !HasKnownProfile(actual) {
-            this.Logger.Debug("Apply verification skipped for " MapGet(current, "exe", "") ": current profile is unknown")
-            this.CompleteApplyTracking(hwndKey)
-            this.Tray.Refresh()
-            return
+    static CompareObservation(previous, actual) {
+        merged := StateClone(actual)
+        if !KeyPersonaApp.SameInputProfile(previous, actual)
+            return {state: merged, changed: true}
+        changed := false
+        for field in ["imeOpen", "conversion", "sentence"] {
+            before := MapGet(previous, field, "unknown")
+            after := MapGet(actual, field, "unknown")
+            if (after = "unknown")
+                merged[field] := before
+            else if (before != "unknown" && before != after)
+                changed := true
         }
-        if StateMatches(actual, desired) {
-            if this.Config.AutoMemory {
-                this.LastSamples[hwndKey] := StateSignature(actual)
-                this.StableCounts[hwndKey] := 1
-            }
-            this.Logger.Debug("Apply verified for " current["exe"])
-            this.CompleteApplyTracking(hwndKey)
-            this.Tray.Refresh()
-            return
-        }
-        if (retryCount < 1 && MapGet(this.RetryAllowed, hwndKey, false)) {
-            this.Logger.Debug("Apply verification mismatch; retrying once")
-            this.Profiles.Switch(current, desired)
-            SetTimer(ObjBindMethod(this, "FinishApply", generation, hwnd, retryCount + 1), -90)
-            return
-        }
-        this.Logger.Warn("Could not verify desired input state for " current["exe"]
-            . "; actual=" StateLabel(actual) "; desired=" StateLabel(desired))
-        this.CompleteApplyTracking(hwndKey)
-        this.Tray.Refresh()
+        return {state: merged, changed: changed}
     }
 
-    CompleteApplyTracking(hwndKey) {
-        if this.DesiredStates.Has(hwndKey)
-            this.DesiredStates.Delete(hwndKey)
-        if this.RetryAllowed.Has(hwndKey)
-            this.RetryAllowed.Delete(hwndKey)
-    }
-
-    ReadState(windowInfo) {
-        profile := this.Profiles.Read(windowInfo)
+    ReadState(windowInfo, focus := unset, enforcedTarget := unset) {
+        if !IsSet(focus)
+            focus := this.Identity.GetForegroundFocus(windowInfo)
+        if !focus.Count || !focus["focused"] || !this.Identity.IsForegroundFocus(windowInfo, focus)
+            return Map()
+        profile := this.Profiles.Read(windowInfo, focus)
         this.SyncDiscoveredProfiles()
         if (HasKnownProfile(profile)
             && !this.Profiles.Catalog.Has(StrLower(MapGet(profile, "profile", "")))) {
             profile["profile"] := MapGet(profile, "langId", "0000") ":unknown"
             profile["kind"] := "unknown"
         }
-        mode := this.Mode.Read(windowInfo, MapGet(profile, "kind", "unknown"))
+        if !IsSet(enforcedTarget) {
+            mode := this.Mode.Read(windowInfo, MapGet(profile, "kind", "unknown"), focus)
+        } else {
+            mode := Map()
+            open := MapGet(enforcedTarget, "imeOpen", "unknown")
+            if ((open = "0" || open = "1") && ImeMode.Supports(profile["kind"])
+                && KeyPersonaApp.SameInputProfile(profile, enforcedTarget))
+                mode["imeOpen"] := this.Mode.ReadOpenStatus(windowInfo, this.Config.MessageTimeoutMs, focus)
+        }
+        if (!this.Identity.IsForegroundFocus(windowInfo, focus)
+            || profile["hkl"] != "0x" Hex(DllCall("user32\GetKeyboardLayout", "UInt", focus["threadId"], "Ptr")))
+            return Map()
         return Map(
             "profile", MapGet(profile, "profile", "unknown"),
             "kind", MapGet(profile, "kind", "unknown"),
@@ -367,7 +313,9 @@ class KeyPersonaApp {
             "hkl", MapGet(profile, "hkl", "0x0"),
             "imeOpen", MapGet(mode, "imeOpen", "unknown"),
             "conversion", MapGet(mode, "conversion", "unknown"),
-            "sentence", MapGet(mode, "sentence", "unknown")
+            "sentence", MapGet(mode, "sentence", "unknown"),
+            "focusHwnd", focus["hwnd"],
+            "focusThreadId", focus["threadId"]
         )
     }
 
@@ -383,37 +331,40 @@ class KeyPersonaApp {
         if !KeyPersonaApp.IsSameTopLevelWindow(this.CurrentWindow, foreground)
             return
         actual := this.ReadState(this.CurrentWindow)
+        if !actual.Count
+            return
         this.CurrentState := actual
         this.CurrentRule := this.MatchRule(this.CurrentWindow)
-        if !this.Config.AutoMemory {
+        if !this.CanRemember(this.CurrentWindow) && !this.Enforcement.Target.Count {
             this.CurrentSource := this.CurrentRule.Count
                 && StateMatches(actual, this.CurrentRule["state"]) ? "rule" : "observed"
         }
     }
 
-    SetObservationBaseline(windowInfo, actualState) {
-        if !windowInfo.Count || !actualState.Count
+    SetObservationBaseline(windowInfo, actualState, source := "") {
+        if !KeyPersonaApp.IsSameTopLevelWindow(this.CurrentWindow, windowInfo)
             return
         matchedRule := this.MatchRule(windowInfo)
-        source := "observed"
-        if (matchedRule.Count && StateMatches(actualState, matchedRule["state"])) {
-            source := "rule"
-        } else {
-            defaultState := this.Config.GetNamedState(this.Config.DefaultState)
-            if (defaultState.Count && StateMatches(actualState, defaultState))
-                source := "default"
+        if (source = "") {
+            source := "observed"
+            hwndKey := windowInfo["hwnd"] ""
+            if (this.CanRemember(windowInfo) && this.SessionStates.Has(hwndKey)
+                && StateMatches(actualState, this.SessionStates[hwndKey])) {
+                source := MapGet(this.SessionStates[hwndKey], "source", "learned")
+            } else if (matchedRule.Count && StateMatches(actualState, matchedRule["state"])) {
+                source := "rule"
+            } else {
+                defaultState := this.Config.GetNamedState(this.Config.DefaultState)
+                if (defaultState.Count && StateMatches(actualState, defaultState))
+                    source := "default"
+            }
         }
-        baseline := StateClone(actualState)
-        baseline["source"] := source
-        hwndKey := windowInfo["hwnd"] ""
-        this.SessionStates[hwndKey] := baseline
-        this.LastSamples[hwndKey] := StateSignature(actualState)
-        this.StableCounts[hwndKey] := 1
-        if (windowInfo["hwnd"] = MapGet(this.CurrentWindow, "hwnd", 0)) {
-            this.CurrentState := actualState
-            this.CurrentRule := matchedRule
-            this.CurrentSource := source
-        }
+        this.ObservationState := this.CanRemember(windowInfo) && HasKnownProfile(actualState)
+            ? StateClone(actualState) : Map()
+        this.CandidateSignature := ""
+        this.CurrentState := actualState
+        this.CurrentRule := matchedRule
+        this.CurrentSource := source
     }
 
     SyncDiscoveredProfiles() {
@@ -448,20 +399,20 @@ class KeyPersonaApp {
     }
 
     RemoveInvalidRuntimeStates(validProfiles) {
-        removed := 0
-        for stateMap in [this.SessionStates, this.DesiredStates] {
-            invalidKeys := []
-            for hwndKey, state in stateMap {
-                profileId := StrLower(Trim(MapGet(state, "profile", "") ""))
-                if !validProfiles.Has(profileId)
-                    invalidKeys.Push(hwndKey)
-            }
-            for hwndKey in invalidKeys {
-                stateMap.Delete(hwndKey)
-                removed += 1
-            }
+        invalidKeys := []
+        for hwndKey, state in this.SessionStates {
+            if !validProfiles.Has(StrLower(MapGet(state, "profile", "")))
+                invalidKeys.Push(hwndKey)
         }
-        return removed
+        for hwndKey in invalidKeys
+            this.SessionStates.Delete(hwndKey)
+        if this.Restore.Pending && !validProfiles.Has(StrLower(MapGet(this.Restore.Pending.desired, "profile", "")))
+            this.Restore.Cancel()
+        if this.ObservationState.Count && !validProfiles.Has(StrLower(this.ObservationState["profile"])) {
+            this.ObservationState := Map()
+            this.CandidateSignature := ""
+        }
+        return invalidKeys.Length
     }
 
     LogCatalogResult(result, removedRecords := 0) {
@@ -478,82 +429,116 @@ class KeyPersonaApp {
     }
 
     Poll() {
-        if !this.Enabled || !this.Config.AutoMemory || this.ShuttingDown
+        if !this.Enabled || this.ShuttingDown
             return
-        foreground := this.Identity.Resolve()
-        if !foreground.Count
-            return
-        if !KeyPersonaApp.IsSameTopLevelWindow(this.CurrentWindow, foreground) {
-            this.QueueForegroundSwitch(foreground["hwnd"])
+        foreground := DllCall("user32\GetForegroundWindow", "Ptr")
+        if (foreground != this.ForegroundHwnd || this.ProfilePolicyRefreshNeeded) {
+            this.QueueWindowCheck()
             return
         }
-        if this.ProfilePolicyRefreshNeeded {
-            this.SwitchToForeground(foreground["hwnd"])
+        if !foreground || foreground != MapGet(this.CurrentWindow, "hwnd", 0)
             return
-        }
         this.ObserveCurrentWindow()
-        if (this.PollPeriod != this.Config.IdlePollMs && TickCount64() >= this.BurstUntil)
+        if !this.Enforcement.Target.Count && this.PollPeriod != this.Config.IdlePollMs
+            && TickCount64() >= this.BurstUntil
             this.SetPollPeriod(this.Config.IdlePollMs)
     }
 
     ObserveCurrentWindow() {
         windowInfo := this.CurrentWindow
-        if !windowInfo.Count || !this.Config.AutoMemory
+        if !windowInfo.Count || this.Restore.Pending
             return
-        hwndKey := windowInfo["hwnd"] ""
-        now := TickCount64()
-        if (this.Suppressions.Has(hwndKey) && now < this.Suppressions[hwndKey])
+        target := this.Enforcement.Target
+        remember := this.CanRemember(windowInfo)
+        if !remember && !target.Count
             return
-        actual := this.ReadState(windowInfo)
-        if !HasKnownProfile(actual)
+        previous := this.ObservationState
+        actual := target.Count ? this.ReadState(windowInfo,, target) : this.ReadState(windowInfo)
+        if (!this.Enabled || this.Restore.Pending || this.Enforcement.Target != target
+            || this.CanRemember(windowInfo) != remember
+            || this.CurrentWindow != windowInfo || this.ObservationState != previous)
             return
+        if !HasKnownProfile(actual) {
+            this.CandidateSignature := ""
+            return
+        }
         if this.ObserveOnly {
-            if (windowInfo["hwnd"] = MapGet(this.CurrentWindow, "hwnd", 0)) {
-                this.CurrentState := actual
-                this.CurrentRule := this.MatchRule(windowInfo)
-                this.CurrentSource := this.CurrentRule.Count ? "rule" : "observed"
-                this.Tray.Refresh()
-            }
-            return
-        }
-        matchedRule := this.MatchRule(windowInfo)
-        signature := StateSignature(actual)
-        if (this.LastSamples.Has(hwndKey) && this.LastSamples[hwndKey] = signature)
-            this.StableCounts[hwndKey] := MapGet(this.StableCounts, hwndKey, 0) + 1
-        else {
-            this.LastSamples[hwndKey] := signature
-            this.StableCounts[hwndKey] := 1
-        }
-        if (this.StableCounts[hwndKey] < 2)
-            return
-        if !this.SessionStates.Has(hwndKey) {
             this.SetObservationBaseline(windowInfo, actual)
             this.Tray.Refresh()
             return
         }
-        oldState := this.SessionStates.Has(hwndKey) ? this.SessionStates[hwndKey] : Map()
-        changed := !oldState.Count || StateSignature(oldState) != signature
-        if changed {
-            actual["source"] := "learned"
-            this.SessionStates[hwndKey] := StateClone(actual)
-            this.Store.Upsert(windowInfo, actual, "learned")
-            this.ScheduleFlush()
-            this.Logger.Info("Learned " windowInfo["exe"] ": " StateLabel(actual))
-        } else {
-            actual["source"] := MapGet(oldState, "source", "learned")
-            this.SessionStates[hwndKey] := StateClone(actual)
+        if target.Count {
+            this.ObserveEnforcedState(windowInfo, actual, target)
+            return
         }
-        if (windowInfo["hwnd"] = MapGet(this.CurrentWindow, "hwnd", 0)) {
-            this.CurrentState := actual
-            this.CurrentRule := matchedRule
-            this.CurrentSource := MapGet(actual, "source", "learned")
+        if (!previous.Count || previous["focusHwnd"] != actual["focusHwnd"]
+            || MapGet(previous, "focusThreadId", 0) != MapGet(actual, "focusThreadId", 0)) {
+            this.SetObservationBaseline(windowInfo, actual)
             this.Tray.Refresh()
+            return
         }
+        comparison := KeyPersonaApp.CompareObservation(previous, actual)
+        source := this.CurrentSource
+        if comparison.changed {
+            signature := StateSignature(comparison.state)
+            now := TickCount64()
+            if (signature != this.CandidateSignature) {
+                this.CandidateSignature := signature
+                this.CandidateSince := now
+                this.ScheduleObservationCheck(60)
+                return
+            }
+            if (now - this.CandidateSince < 60) {
+                this.ScheduleObservationCheck(60 - (now - this.CandidateSince))
+                return
+            }
+            source := "learned"
+            remembered := comparison.state
+            remembered["source"] := source
+            this.SessionStates[windowInfo["hwnd"] ""] := StateClone(remembered)
+            this.Store.Upsert(windowInfo, remembered, source)
+            this.ScheduleFlush()
+            this.Logger.Info("Learned " windowInfo["exe"] ": " StateLabel(remembered))
+        }
+        this.SetObservationBaseline(windowInfo, comparison.state, source)
+        this.CurrentState := actual
+        this.Tray.Refresh()
+    }
+
+    ObserveEnforcedState(windowInfo, actual, target) {
+        now := TickCount64()
+        matches := StateMatches(actual, target)
+        if matches && this.Enforcement.Failures
+            this.Enforcement.NoteResult(actual, now)
+        if this.Enforcement.ShouldRestore(actual, now) {
+            this.ApplyState(windowInfo, target, "enforce", true)
+            return
+        }
+        this.CurrentState := actual
+        this.CurrentSource := matches ? MapGet(target, "source", "observed") : "observed"
+        this.Tray.Refresh()
+    }
+
+    ScheduleObservationCheck(delay) {
+        SetTimer(this.ConfirmCallback, -Max(1, delay))
+    }
+
+    ConfirmObservation() {
+        if this.Enabled && !this.ShuttingDown && this.CandidateSignature != ""
+            this.ObserveCurrentWindow()
     }
 
     BeginBurst() {
-        if !this.Enabled || !this.Config.AutoMemory
+        if !this.Enabled
             return
+        if this.Enforcement.Target.Count {
+            this.SetPollPeriod(this.Config.ForcePollMs)
+            return
+        }
+        if !this.CanRemember(this.CurrentWindow) {
+            this.SetPollPeriod(0)
+            return
+        }
         this.BurstUntil := TickCount64() + this.Config.BurstDurationMs
         this.SetPollPeriod(this.Config.ActivePollMs)
     }
@@ -577,32 +562,30 @@ class KeyPersonaApp {
         this.Enabled := !this.Enabled
         if this.Enabled {
             this.Logger.Info("Enabled")
-            if this.Config.AutoMemory
-                this.SetPollPeriod(this.Config.ActivePollMs)
-            this.QueueForegroundSwitch()
+            this.ForegroundHwnd := -1
+            this.QueueWindowCheck()
         } else {
             this.Logger.Info("Disabled")
-            SetTimer(this.PollCallback, 0)
-            this.PollPeriod := 0
-            this.ForegroundSequence += 1
-            this.PendingForegroundHwnd := 0
-            this.PendingForegroundDue := 0
+            this.Restore.Cancel()
+            this.ExplicitApply := 0
+            this.ObservationState := Map()
+            this.CandidateSignature := ""
+            this.SetPollPeriod(0)
+            SetTimer(this.WindowCallback, 0)
+            SetTimer(this.ConfirmCallback, 0)
+            this.WindowCheckQueued := false
+            this.FocusEventHwnd := 0
         }
         this.Tray.Refresh(true)
     }
 
     ToggleAutoMemory(*) {
         enabled := this.Config.SetAutoMemory(!this.Config.AutoMemory)
-        if enabled && this.Enabled {
-            this.BeginBurst()
-        } else {
-            SetTimer(this.PollCallback, 0)
-            this.PollPeriod := 0
-        }
+        this.RefreshCurrentInputPolicy()
         this.Logger.Info("Automatic memory " (enabled ? "enabled" : "disabled"))
         TrayTip(enabled
-            ? "已开启自动记忆。手动切换后的输入法会保存到当前窗口。"
-            : "已关闭自动记忆。只在进入窗口时执行用户规则，不会限制手动切换。",
+            ? "已开启全局自动记忆。各应用继续使用自己的输入法设置。"
+            : "已关闭全局自动记忆。已启用强制保持的应用可继续使用匹配的用户规则。",
             AppInfo.Name, "Mute")
         this.Tray.Refresh(true)
     }
@@ -618,46 +601,47 @@ class KeyPersonaApp {
             return
         }
         this.RefreshRuleEngine()
+        this.Restore.Cancel()
+        this.ObservationState := Map()
+        this.CandidateSignature := ""
         hwndKey := this.CurrentWindow["hwnd"] ""
         if this.Store.Remove(this.CurrentWindow)
             this.ScheduleFlush()
         if this.SessionStates.Has(hwndKey)
             this.SessionStates.Delete(hwndKey)
-        if this.LastSamples.Has(hwndKey)
-            this.LastSamples.Delete(hwndKey)
-        if this.StableCounts.Has(hwndKey)
-            this.StableCounts.Delete(hwndKey)
         state["source"] := "rule"
         this.CurrentRule := this.MatchRule(this.CurrentWindow)
         this.CurrentSource := "rule"
-        this.ExplicitApplyGeneration += 1
-        generation := this.ExplicitApplyGeneration
-        targetWindow := StateClone(this.CurrentWindow)
-        SetTimer(ObjBindMethod(this, "ApplyExplicitWindowState",
-            generation, targetWindow, StateClone(state), 0), -50)
+        this.SetEnforcedTarget(this.CurrentWindow, state)
+        this.BeginBurst()
+        this.QueueExplicitApply(this.CurrentWindow, state, "window-default")
         TrayTip("已设置当前窗口的默认输入法；返回窗口后立即切换。`n旧自动记忆已清除。",
             AppInfo.Name, "Mute")
         this.Tray.Refresh(true)
     }
 
-    ApplyExplicitWindowState(generation, targetWindow, state, attempt) {
-        if (generation != this.ExplicitApplyGeneration || this.ShuttingDown)
+    QueueExplicitApply(windowInfo, state, reason) {
+        if !this.Enabled || this.ObserveOnly
             return
-        foreground := this.Identity.Resolve()
-        if KeyPersonaApp.IsSameTopLevelWindow(targetWindow, foreground) {
-            this.CurrentWindow := targetWindow
-            this.CurrentRule := this.MatchRule(targetWindow)
-            this.CurrentSource := "rule"
-            this.ApplyState(targetWindow, state, "window-default")
-            this.Tray.Refresh(true)
-            return
+        this.ExplicitApply := {
+            window: windowInfo, state: StateClone(state), reason: reason, until: TickCount64() + 2000
         }
-        if (attempt < 39) {
-            SetTimer(ObjBindMethod(this, "ApplyExplicitWindowState",
-                generation, targetWindow, state, attempt + 1), -50)
-            return
-        }
-        this.Logger.Debug("Deferred explicit input state until the target window becomes foreground")
+        this.QueueWindowCheck()
+    }
+
+    ApplyQueuedSelection(windowInfo) {
+        selection := this.ExplicitApply
+        if !selection
+            return false
+        this.ExplicitApply := 0
+        if (!KeyPersonaApp.IsSameTopLevelWindow(selection.window, windowInfo)
+            || TickCount64() > selection.until
+            || (!this.CanRemember(windowInfo) && MapGet(selection.state, "source", "") != "rule"))
+            return false
+        this.SetEnforcedTarget(windowInfo, selection.state)
+        this.BeginBurst()
+        this.ApplyState(windowInfo, selection.state, selection.reason, true)
+        return true
     }
 
     UseGlobalForCurrentWindow(*) {
@@ -670,6 +654,8 @@ class KeyPersonaApp {
         if (!hasWindowRule && !applicationRule.Count && !legacyManual)
             return
 
+        this.Restore.Cancel()
+        this.ExplicitApply := 0
         removedCount := 0
         if this.Config.RemoveWindowRule(this.CurrentWindow) {
             removedCount += 1
@@ -696,8 +682,10 @@ class KeyPersonaApp {
         this.CurrentRule := this.MatchRule(this.CurrentWindow)
         desired := this.SelectDesiredState(this.CurrentWindow, this.CurrentRule)
         this.CurrentSource := MapGet(desired, "source", "")
-        if !this.ObserveOnly && desired.Count
-            this.ApplyState(this.CurrentWindow, desired, "rule-removed")
+        this.SetEnforcedTarget(this.CurrentWindow, desired)
+        this.BeginBurst()
+        if desired.Count
+            this.QueueExplicitApply(this.CurrentWindow, desired, "rule-removed")
         else if !desired.Count {
             this.CurrentState := this.ReadState(this.CurrentWindow)
             this.CurrentSource := "observed"
@@ -738,20 +726,22 @@ class KeyPersonaApp {
             TrayTip("当前窗口没有可清除的自动记忆。", AppInfo.Name, "Mute")
             return
         }
+        this.Restore.Cancel()
+        this.ExplicitApply := 0
+        this.ObservationState := Map()
+        this.CandidateSignature := ""
         if saved.Count
             this.Store.Remove(this.CurrentWindow)
         if this.SessionStates.Has(hwndKey)
             this.SessionStates.Delete(hwndKey)
-        if this.LastSamples.Has(hwndKey)
-            this.LastSamples.Delete(hwndKey)
-        if this.StableCounts.Has(hwndKey)
-            this.StableCounts.Delete(hwndKey)
         this.ScheduleFlush()
         rule := this.MatchRule(this.CurrentWindow)
         desired := this.SelectDesiredState(this.CurrentWindow, rule)
         this.CurrentSource := MapGet(desired, "source", "")
-        if !this.ObserveOnly && desired.Count
-            this.ApplyState(this.CurrentWindow, desired, "clear")
+        this.SetEnforcedTarget(this.CurrentWindow, desired)
+        this.BeginBurst()
+        if desired.Count
+            this.QueueExplicitApply(this.CurrentWindow, desired, "clear")
         else if !desired.Count {
             this.CurrentState := this.ReadState(this.CurrentWindow)
             this.CurrentSource := "observed"
@@ -764,22 +754,17 @@ class KeyPersonaApp {
             AppInfo.Name, "YesNo Icon!") != "Yes"
             return
         removed := this.Store.ClearAll()
-        this.ApplyGeneration += 1
+        this.Restore.Cancel()
+        this.ExplicitApply := 0
         this.SessionStates := Map()
-        this.LastSamples := Map()
-        this.StableCounts := Map()
-        this.Suppressions := Map()
-        this.DesiredStates := Map()
-        this.RetryAllowed := Map()
+        this.ObservationState := Map()
+        this.CandidateSignature := ""
         if !this.Store.Flush() {
             TrayTip("无法保存清除结果，请检查程序目录是否可写。", AppInfo.Name, "Iconx")
             this.Tray.Refresh(true)
             return
         }
-        if this.CurrentWindow.Count {
-            actual := this.ReadState(this.CurrentWindow)
-            this.SetObservationBaseline(this.CurrentWindow, actual)
-        }
+        this.RefreshCurrentInputPolicy()
         this.Logger.Info("Cleared all automatic memories: " removed " persisted record(s)")
         TrayTip("已清除所有自动记忆；用户规则和全局默认设置保持不变。", AppInfo.Name, "Mute")
         this.Tray.Refresh(true)
@@ -794,7 +779,10 @@ class KeyPersonaApp {
         if this.ShuttingDown
             return
         this.ShuttingDown := true
-        this.ExplicitApplyGeneration += 1
+        this.Restore.Cancel()
+        this.ExplicitApply := 0
+        try SetTimer(this.WindowCallback, 0)
+        try SetTimer(this.ConfirmCallback, 0)
         try SetTimer(this.PollCallback, 0)
         try SetTimer(this.FlushCallback, 0)
         try this.Hook.Stop()

@@ -14,6 +14,7 @@ Persistent
 #Include lib\Rules.ahk
 #Include lib\InputProfiles.ahk
 #Include lib\ImeMode.ahk
+#Include lib\InputRestoration.ahk
 #Include lib\Punctuation.ahk
 #Include lib\WinEventHook.ahk
 #Include lib\TrayMenu.ahk

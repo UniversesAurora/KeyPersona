@@ -442,3 +442,194 @@ TestProjectIconPaint(button, iconSize) {
         DllCall("gdi32\DeleteObject", "Ptr", bitmap)
     }
 }
+
+TestInputRestoration(config, logger, failures) {
+    Critical "On"
+    try {
+        chinese := Map("profile", "0804:test", "kind", "tip", "imeOpen", "1", "focusHwnd", 101)
+        englishMode := StateClone(chinese)
+        englishMode["imeOpen"] := "0"
+        englishLayout := Map("profile", "0409:00000409", "kind", "keyboard", "source", "rule")
+
+        app := InputRestorationProbe(config, logger, chinese)
+        app.ApplyState(app.CurrentWindow, englishLayout, "default", true)
+        app.ExpireRestoreCheck()
+        app.ObserveCurrentWindow()
+        app.ObserveCurrentWindow()
+        AssertTest(!app.Restore.Pending && MapGet(app.ObservationState, "profile", "") = chinese["profile"]
+            && app.LayoutRequests = 1 && !app.SessionStates.Count && !app.Saved.Count,
+            "Failed rule uses actual state as a baseline without learning it", failures)
+
+        app.Actual := StateClone(chinese)
+        app.Actual["imeOpen"] := "unknown"
+        app.ObserveCurrentWindow()
+        app.ObserveCurrentWindow()
+        AssertTest(MapGet(app.ObservationState, "imeOpen", "") = "1" && !app.Saved.Count,
+            "Unreadable IME mode does not replace the last known mode", failures)
+
+        app.Actual := englishMode
+        app.ObserveCurrentWindow()
+        AssertTest(!app.Saved.Count, "First changed sample is not persisted", failures)
+        app.CandidateSince := TickCount64() - 60
+        app.ConfirmObservation()
+        AssertTest(MapGet(app.Saved, "imeOpen", "") = "0",
+            "Stable manual change after a failed restore is learned", failures)
+
+        app.Actual := StateClone(englishLayout)
+        app.Actual["focusHwnd"] := 101
+        app.ApplyState(app.CurrentWindow, app.Saved, "restore", true)
+        app.Restore.Pending.retried := true
+        app.ExpireRestoreCheck()
+        app.ObserveCurrentWindow()
+        app.ObserveCurrentWindow()
+        AssertTest(MapGet(app.Saved, "profile", "") = englishMode["profile"]
+            && MapGet(app.SessionStates["100"], "imeOpen", "") = "0",
+            "Failed restore preserves previously learned state", failures)
+
+        app := InputRestorationProbe(config, logger, chinese)
+        app.ApplyState(app.CurrentWindow, englishMode)
+        app.ApplyState(app.CurrentWindow, chinese, "window-default", true)
+        app.Restore.Advance()
+        AssertTest(!app.Restore.Pending && !app.ModeWrites && !app.LayoutRequests,
+            "Matching selection cancels stale work without switching", failures)
+
+        app := InputRestorationProbe(config, logger, chinese)
+        remembered := StateClone(englishMode)
+        remembered["source"] := "learned"
+        app.ApplyState(app.CurrentWindow, remembered, "restore", true)
+        app.ExpireRestoreCheck()
+        AssertTest(app.ModeWrites = 2 && !app.LayoutRequests,
+            "Mode-only retry never posts an input source switch", failures)
+        app.Restore.Cancel()
+
+        app := InputRestorationProbe(config, logger, chinese)
+        app.ApplyState(app.CurrentWindow, englishLayout, "default", true)
+        app.Actual := StateClone(chinese)
+        app.Actual["focusHwnd"] := 102
+        app.Restore.Advance(true)
+        AssertTest(!app.Restore.Pending && app.LayoutRequests = 1 && !app.ModeWrites,
+            "Verification after a write does not send it again to another control", failures)
+
+        host := StateClone(englishLayout)
+        host["focusHwnd"] := 100
+        app := InputRestorationProbe(config, logger, host)
+        app.ApplyState(app.CurrentWindow, englishLayout, "default", true)
+        AssertTest(app.Restore.Pending && !app.LayoutRequests,
+            "Matching host can await an incoming search-field focus", failures)
+        app.Actual := chinese
+        app.Restore.Advance(true)
+        AssertTest(app.LayoutRequests = 1 && app.LastWriteFocus = 101,
+            "Search-field focus advances the pending restore to the actual control", failures)
+        app.Actual := StateClone(englishLayout)
+        app.Actual["focusHwnd"] := 101
+        app.Restore.Advance()
+        AssertTest(!app.Restore.Pending && app.LayoutRequests = 1,
+            "A matching field completes the restore with a single layout request", failures)
+
+        app := InputRestorationProbe(config, logger, host)
+        app.ApplyState(app.CurrentWindow, englishMode, "default", true)
+        app.Actual := StateClone(chinese)
+        app.Actual["focusHwnd"] := 100
+        app.Actual["imeOpen"] := "unknown"
+        app.Restore.Advance(true)
+        AssertTest(app.LayoutRequests = 1 && !app.ModeWrites,
+            "A profile can arrive before its internal mode is readable", failures)
+        app.Actual["imeOpen"] := "1"
+        app.Restore.Advance()
+        AssertTest(app.LayoutRequests = 1 && app.ModeWrites = 1,
+            "Readable mode advances the second stage without reposting the layout", failures)
+        app.Restore.Cancel()
+
+        app := InputRestorationProbe(config, logger, chinese)
+        target := StateClone(englishLayout)
+        target["source"] := "learned"
+        app.ApplyState(app.CurrentWindow, target, "restore", true)
+        app.Actual := Map("profile", "0411:00000411", "kind", "keyboard", "focusHwnd", 101)
+        app.ExpireRestoreCheck()
+        AssertTest(!app.Restore.Pending && app.LayoutRequests = 1
+            && app.ObservationState["profile"] = "0411:00000411" && !app.Saved.Count,
+            "Unexpected input source ends restoration and does not get overwritten", failures)
+    } finally {
+        Critical "Off"
+    }
+}
+
+class InputRestorationProbe extends KeyPersonaApp {
+    __New(config, logger, actual) {
+        this.Config := config
+        this.Logger := logger
+        this.Enabled := true
+        this.ShuttingDown := false
+        this.ObserveOnly := false
+        this.Actual := actual
+        this.CurrentWindow := Map("hwnd", 100, "exe", "probe.exe")
+        this.SessionStates := Map()
+        this.ObservationState := Map()
+        this.CandidateSignature := ""
+        this.Restore := InputRestorationClockProbe(this)
+        this.Enforcement := InputEnforcement()
+        this.LayoutRequests := 0
+        this.ModeWrites := 0
+        this.LastWriteFocus := 0
+        this.Saved := Map()
+        this.StoreReads := 0
+        this.Tray := this
+        this.Store := this
+        this.Profiles := this
+        this.Mode := this
+        this.Identity := this
+    }
+
+    GetForegroundFocus(windowInfo) {
+        return Map("hwnd", this.Actual["focusHwnd"], "threadId", 1, "focused", true)
+    }
+
+    ReadState(windowInfo, focus := unset, enforcedTarget := unset) {
+        if IsSet(focus) && focus["hwnd"] != this.Actual["focusHwnd"]
+            return Map()
+        return StateClone(this.Actual)
+    }
+
+    MatchRule(windowInfo) {
+        return Map()
+    }
+
+    Find(windowInfo) {
+        this.StoreReads += 1
+        return StateClone(this.Saved)
+    }
+
+    Switch(windowInfo, desired, focus) {
+        this.LayoutRequests += 1
+        this.LastWriteFocus := focus["hwnd"]
+        return true
+    }
+
+    Apply(windowInfo, desired, focus) {
+        this.ModeWrites += 1
+        return true
+    }
+
+    Upsert(windowInfo, state, source) {
+        this.Saved := StateClone(state)
+    }
+
+    Refresh(*) {
+    }
+
+    ScheduleFlush() {
+    }
+
+    ScheduleObservationCheck(delay) {
+    }
+
+    ExpireRestoreCheck() {
+        this.Restore.Pending.checkUntil := TickCount64() - 1
+        this.Restore.Advance()
+    }
+}
+
+class InputRestorationClockProbe extends InputRestoration {
+    ScheduleCheck(delay) {
+    }
+}
