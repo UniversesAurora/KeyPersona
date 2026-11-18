@@ -57,7 +57,7 @@ class KeyPersonaApp {
         this.Hook := WindowWinEventHook(this.EventGui.Hwnd, KeyPersonaApp.EVENT_MESSAGE)
         this.InputKeys := InputChangeKeys(this.EventGui.Hwnd, ObjBindMethod(this, "QueueInputCheck"))
         this.Punctuation := PunctuationController(this)
-        this.Tray := TrayMenuController(this)
+        this.Cleanup := observeOnly ? 0 : InvalidEntryCleanup(this)
         this.Tray := observeOnly ? 0 : TrayMenuController(this)
     }
 
@@ -1001,6 +1001,24 @@ class KeyPersonaApp {
         this.AfterTargetEdit(windowInfo, this.SelectDesiredState(windowInfo, this.MatchRule(windowInfo)), "clear")
     }
 
+    ClearInvalidMemory(keys) {
+        selected := Map()
+        for key in keys {
+            this.Store.Remove(Map("identityKey", key))
+            selected[key] := true
+        }
+        for hwndKey, windowInfo in this.SessionWindows {
+            if selected.Has(windowInfo["identityKey"]) && this.SessionStates.Has(hwndKey)
+                this.SessionStates.Delete(hwndKey)
+        }
+        if selected.Has(MapGet(this.CurrentWindow, "identityKey", "")) {
+            this.InputPolicyRefreshNeeded := true
+            this.QueueWindowCheck()
+        }
+        if this.Store.Flush()
+            return true
+        this.ScheduleFlush()
+        return false
     }
 
     ClearAllRecords(*) {
@@ -1048,6 +1066,7 @@ class KeyPersonaApp {
         try OnMessage(KeyPersonaApp.EVENT_MESSAGE, this.MessageCallback, 0)
         try this.Punctuation.Dispose()
         try this.Tray.Dispose()
+        try this.Cleanup.Close()
         if !this.ObserveOnly
             try this.Store.Flush()
         this.Logger.Info(AppInfo.Name " stopped")

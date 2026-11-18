@@ -419,6 +419,7 @@ RunSelfTests(baseDir) {
     TestRuleSpecificity(reloadedConfig, testLogger, failures)
     TestPackageIdentity(reloadedConfig, testLogger, failures)
     TestInstallationIdentity(reloadedConfig, testLogger, failures)
+    TestInvalidEntryCleanup(reloadedConfig, testLogger, failures)
     TestRuleFileOrder(reloadedConfig, testLogger, failures)
     TestProfileSyncRetry(tempConfigDir, discoveredCatalog, testLogger, failures)
     TestInputChangeKeys(failures)
@@ -687,6 +688,66 @@ TestInstallationIdentity(config, logger, failures) {
         config.SetAppInputOption("Game.exe", "force", "inherit")
         config.ClearAppPunctuationOptions("Game.exe")
     }
+}
+
+TestInvalidEntryCleanup(config, logger, failures) {
+    existingPath := A_AhkPath
+    missingPath := A_ScriptDir "\keypersona-absent-" TickCount64() "\fixture.exe"
+    absentPackage := "KeyPersona.CleanupFixtureMissing_8wekyb3d8bbwe"
+    configText := "[state.valid]`nprofile=0409:00000409`n"
+        . "[app-identity.removed]`npath=" missingPath "`n"
+        . "[app-identity.dormant]`npath=" existingPath "`nenabled=0`n"
+        . "[input-app.dormant]`nappId=dormant`nforce=1`n"
+        . "packageFamily=" absentPackage "`n"
+        . "[input-app.orphan]`nappId=undefined`nforce=1`n"
+        . "[punctuation-app.missing]`npackageFamily=" absentPackage "`nenabled=1`n"
+        . "[window-rule.missing]`nidentityKey=app:removed|class|title`nstate=valid`n"
+        . "[window-rule.good]`nidentityKey=fixture.exe`nstate=valid`npath=" missingPath "`n"
+        . "[rule.missing-file]`npath=" missingPath "`nstate=valid`n"
+        . "[rule.missing-reference]`nexe=fixture.exe`nstate=undefined`n"
+        . "[rule.pattern]`nexe=fixture*.exe`nstate=valid`n"
+        . "[rule.relative]`npath=.\fixture.exe`nstate=valid`n"
+        . "[rule.network]`npath=\\invalid\remote\fixture.exe`nstate=valid`n"
+        . "[rule.repeated]`npath=" missingPath "`nstate=valid`n"
+        . "[rule.repeated]`npriority=3`n"
+    scan := InvalidEntryScan(IniDocument.Parse(configText))
+    invalidConfig := scan.FindConfig()
+    AssertTest(invalidConfig.Count = 6 && invalidConfig.Has("app-identity.removed")
+        && invalidConfig.Has("input-app.orphan") && invalidConfig.Has("punctuation-app.missing")
+        && invalidConfig.Has("window-rule.missing") && invalidConfig.Has("rule.missing-file")
+        && invalidConfig.Has("rule.missing-reference"),
+        "Config cleanup preserves disabled identities, uncertain paths, wildcard rules and repeated sections", failures)
+
+    app := InputRestorationProbe(config, logger, Map())
+    app.Store := StateStore(config.StatePath ".cleanup-fixture", logger)
+    app.CurrentWindow := Map()
+    app.SessionWindows := Map()
+    keep := ["fixture.exe", "app:dormant", "path:" existingPath]
+    discard := ["app:removed", "app:undefined|class|title", "path:" missingPath "|class|title",
+        "package:fixture.exe|" absentPackage "|class|title"]
+    sample := config.GetNamedState("english-us")
+    for keys in [keep, discard] {
+        for key in keys
+            app.Store.Upsert(Map("identityKey", key), sample)
+    }
+    invalidMemory := scan.FindMemory(app.Store.Records)
+    AssertTest(invalidMemory.Count = discard.Length, "Only missing paths, packages and application identities invalidate memory", failures)
+    AssertTest(app.Store.Flush(), "Stale memories fixture is written", failures)
+    AssertTest(app.ClearInvalidMemory(discard), "Explicit memory cleanup writes the filtered store", failures)
+    main := app.Store.ReadSnapshot(app.Store.Path)
+    backup := app.Store.ReadSnapshot(app.Store.BackupPath)
+    AssertTest(main.valid && backup.valid && main.records.Count = keep.Length && backup.records.Count = keep.Length,
+        "Memory cleanup also refreshes the backup so old entries do not come back", failures)
+
+    path := config.Path ".cleanup-fixture"
+    FileAppend(configText, path, "UTF-8")
+    changed := configText "`n[rule.added-while-open]`nexe=added.exe`nstate=valid`n"
+    FileAppend(SubStr(changed, StrLen(configText) + 1), path, "UTF-8")
+    AssertTest(!IniDocument.Update(path, [["rule.missing-file"]], configText) && FileRead(path, "UTF-8") == changed,
+        "Config cleanup cannot erase a changed file based on an out-of-date preview", failures)
+    AssertTest(IniDocument.Update(path, [["rule.missing-file"]], changed)
+        && !IniDocument.Load(path).Sections.Has("rule.missing-file") && IniDocument.Load(path).Sections.Has("rule.added-while-open"),
+        "Config cleanup removes only selected sections", failures)
 }
 
 TestRuleFileOrder(config, logger, failures) {
@@ -1355,6 +1416,7 @@ class InputRestorationProbe extends KeyPersonaApp {
         this.StateReads := 0
         this.Revision := 1
         this.Tray := this
+        this.Cleanup := InvalidEntryCleanup(this)
         this.Store := this
         this.Profiles := this
         this.Mode := this

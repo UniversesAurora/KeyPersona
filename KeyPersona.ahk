@@ -20,6 +20,7 @@ Persistent
 #Include lib\Punctuation.ahk
 #Include lib\WinEventHook.ahk
 #Include lib\InputChangeKeys.ahk
+#Include lib\Cleanup.ahk
 #Include lib\TrayMenu.ahk
 #Include lib\App.ahk
 #Include lib\SelfTest.ahk
