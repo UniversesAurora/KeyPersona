@@ -52,6 +52,35 @@ RunSelfTests(baseDir) {
     AssertTest(noOpProbe.Apply(Map(), changedState) && noOpProbe.SetCalls = 1,
         "IME mode writes only changed fields", failures)
     AssertTest(ApplicationVersion() != "", "Application version discovery", failures)
+    try {
+        about := AboutDialog()
+        aboutPanel := about.CreatePanel()
+        try {
+            aboutPanel.Show("Hide")
+            projectButton := aboutPanel["ProjectLink"]
+            AssertTest(projectButton.Type = "Button" && projectButton.Text = "GitHub"
+                && about.ProjectIcon && SendMessage(0xF6, 1, 0, projectButton) = about.ProjectIcon,
+                "About window loads the GitHub project icon into a native button", failures)
+            AssertTest(TestProjectIconPaint(projectButton, about.ProjectIconSize),
+                "GitHub project button draws the icon against the panel without a frame", failures)
+            previousCursor := DllCall("user32\GetCursor", "Ptr")
+            try {
+                hand := DllCall("user32\LoadCursorW", "Ptr", 0, "Ptr", 32649, "Ptr")
+                AssertTest(hand && SendMessage(AboutDialog.WM_SETCURSOR, projectButton.Hwnd, 0x02000001, aboutPanel) = 1
+                    && DllCall("user32\GetCursor", "Ptr") = hand,
+                    "GitHub project icon requests the system hand cursor", failures)
+            } finally {
+                DllCall("user32\SetCursor", "Ptr", previousCursor)
+            }
+            AssertTest(InStr(aboutPanel["AuthorLink"].Text, 'href="' AppInfo.AuthorUrl '"'),
+                "About window creates the author GitHub link", failures)
+        } finally {
+            aboutPanel.Destroy()
+            about.Dispose()
+        }
+    } catch Error as failure {
+        failures.Push("About window construction: " failure.Message)
+    }
     SplitPath(baseDir, &selfTestFolder, &selfTestParent)
     if (StrLower(selfTestFolder) = "src")
         AssertTest(RuntimeBaseDir() = selfTestParent, "Source runtime uses install-root configuration", failures)
@@ -386,5 +415,30 @@ class ImeModeNoOpProbe extends ImeMode {
             : command = ImeMode.IMC_GETCONVERSIONMODE ? 0x1
             : command = ImeMode.IMC_GETSENTENCEMODE ? 0x8 : 0
         return Map("ok", true, "value", current, "error", 0)
+    }
+}
+
+TestProjectIconPaint(button, iconSize) {
+    bounds := Buffer(16, 0)
+    DllCall("user32\GetClientRect", "Ptr", button.Hwnd, "Ptr", bounds)
+    width := NumGet(bounds, 8, "Int")
+    height := NumGet(bounds, 12, "Int")
+    screen := DllCall("user32\GetDC", "Ptr", 0, "Ptr")
+    bitmap := DllCall("gdi32\CreateCompatibleBitmap", "Ptr", screen, "Int", width, "Int", height, "Ptr")
+    target := DllCall("gdi32\CreateCompatibleDC", "Ptr", screen, "Ptr")
+    DllCall("user32\ReleaseDC", "Ptr", 0, "Ptr", screen)
+    previous := DllCall("gdi32\SelectObject", "Ptr", target, "Ptr", bitmap, "Ptr")
+    try {
+        Sleep(20)
+        SendMessage(0x318, target, 0xC, button) ; WM_PRINTCLIENT, PRF_CLIENT | PRF_ERASEBKGND
+        top := DllCall("gdi32\GetPixel", "Ptr", target, "Int", width // 2, "Int", 0, "UInt")
+        edge := DllCall("gdi32\GetPixel", "Ptr", target, "Int", 0, "Int", height // 2, "UInt")
+        glyph := DllCall("gdi32\GetPixel", "Ptr", target, "Int", (width - iconSize) // 2 + 2,
+            "Int", height // 2, "UInt")
+        return top = 0xFAF7F5 && edge = top && glyph < 0x777777
+    } finally {
+        DllCall("gdi32\SelectObject", "Ptr", target, "Ptr", previous)
+        DllCall("gdi32\DeleteDC", "Ptr", target)
+        DllCall("gdi32\DeleteObject", "Ptr", bitmap)
     }
 }

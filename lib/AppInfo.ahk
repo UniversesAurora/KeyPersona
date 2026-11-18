@@ -5,6 +5,7 @@
 ;@Ahk2Exe-SetDescription KeyPersona
 ;@Ahk2Exe-SetVersion 1.2.0
 ;@Ahk2Exe-SetMainIcon %A_ScriptDir%\assets\KeyPersona.ico
+;@Ahk2Exe-AddResource %A_ScriptDir%\assets\GitHub-Invertocat.ico, 1001
 ;@Ahk2Exe-SetCopyright Copyright (c) 2026 浮枕
 
 class AppInfo {
@@ -20,8 +21,13 @@ class AppInfo {
     static StartupShortcutName := "KeyPersona.lnk"
     static StartupValueName := "KeyPersona"
     static Description := "按窗口记忆并自动恢复输入法状态"
+    static RepositoryUrl := "https://github.com/UniversesAurora/KeyPersona"
+    ; GitHub Invertocat from https://brand.github.com/foundations/logo
+    static RepositoryIconFile := "assets\GitHub-Invertocat.ico"
+    static RepositoryIconId := 1001
     static Author := "浮枕"
     static AuthorHandle := "@universesaurora"
+    static AuthorUrl := "https://github.com/UniversesAurora"
     static Version := "1.2.0"
 
     ; Retained only so existing installations migrate without losing settings.

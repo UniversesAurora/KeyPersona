@@ -309,7 +309,11 @@ class TrayMenuController {
     }
 
     ShowAbout(*) {
-        this.About.Show()
+        try this.About.Show()
+        catch Error as failure {
+            this.App.Logger.Error("Could not open About window: " failure.Message)
+            TrayTip("无法打开关于窗口。", AppInfo.Name, "Iconx")
+        }
     }
 
     OpenConfig(*) {
