@@ -138,24 +138,28 @@ class TrayMenuController {
             return
         }
         position := DllCall("user32\GetMenuItemCount", "Ptr", targetMenu.Handle, "Int")
-        options := ""
+        firstLanguage := true
         for langId, profiles in languages {
+            if !firstLanguage {
+                targetMenu.Add()
+                position += 1
+            }
+            firstLanguage := false
             heading := InputProfiles.LanguageDisplayName(langId)
             if (heading = "")
                 heading := langId ? "语言 " Hex(langId, 4) : "其他输入法"
-            targetMenu.Insert("", StrReplace(heading, "&", "&&"), (*) => 0, options)
+            targetMenu.Insert("", StrReplace(heading, "&", "&&"), (*) => 0)
             targetMenu.Disable(++position "&")
-            options := "BarBreak"
             for profileId, states in profiles
-                this.AddInputSourceChoice(targetMenu, profileId, states, selected, method, ++position)
+                this.AddInputSourceChoice(targetMenu, profileId, states, selected, callback, ++position)
         }
     }
 
-    AddInputSourceChoice(targetMenu, profileId, states, selected, method, position) {
+    AddInputSourceChoice(targetMenu, profileId, states, selected, callback, position) {
         label := StrReplace(this.App.Profiles.DisplayName(profileId), "&", "&&")
         first := states[1]
         if (states.Length = 1 && ImeMode.ModeLabel(profileId, first["imeOpen"]) = "") {
-            targetMenu.Insert("", label, ObjBindMethod(this, method, first["name"]))
+            targetMenu.Insert("", label, ObjBindMethod(callback, "Call", first["name"]))
             if (first["name"] = selected)
                 targetMenu.Check(position "&")
             return
@@ -169,9 +173,11 @@ class TrayMenuController {
                 mode := ImeMode.ModeLabel(profileId, state["imeOpen"])
                 if (open = "preserve" ? mode != "" : state["imeOpen"] != open)
                     continue
-                modeLabel := TrayMenuController.UniqueLabel(
-                    mode != "" ? mode : "仅切换输入法", name, usedModeLabels)
-                modes.Add(modeLabel, ObjBindMethod(this, method, name))
+                modeLabel := mode != "" ? mode : "仅切换输入法"
+                if ImeMode.NeedsDetailedMode(state)
+                    modeLabel .= " · " (state["description"] != "" ? state["description"] : name)
+                modeLabel := TrayMenuController.UniqueLabel(modeLabel, name, usedModeLabels)
+                modes.Add(modeLabel, ObjBindMethod(callback, "Call", name))
                 if (name = selected) {
                     modes.Check(modeLabel)
                     checked := true

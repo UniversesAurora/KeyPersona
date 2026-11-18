@@ -631,7 +631,7 @@ TestInputProfilesAndMenu(profiles, config, failures) {
     AssertTest((systemJapanese = "" || profiles.DisplayName(japaneseId) = systemJapanese)
         && !profiles.ResolveProfileForLanguage(0x0411, 0xE0210411).Count,
         "Japanese IME uses the localized system name and does not match unrelated legacy layouts", failures)
-    ; Same system name in two language columns must create two distinct items.
+    ; Same system name in two language groups must create two distinct items.
     catalog[StrLower(legacyId)]["description"] := profiles.DisplayName(japaneseId)
     profiles.ByLanguage["0804"].Push(profiles.ParseProfile(tipId),
         profiles.ParseProfile("0804:{11111111-1111-1111-1111-111111111111}{22222222-2222-2222-2222-222222222222}"))
@@ -648,20 +648,43 @@ TestInputProfilesAndMenu(profiles, config, failures) {
     selectedName := "auto-" StrLower(Fnv1a32(StrLower(legacyId))) "-english"
     tray := TrayMenuController({Profiles: profiles, Config: config})
     choices := Menu()
-    try tray.AddInputChoices(choices, selectedName, "SetState")
+    try tray.AddInputChoices(choices, selectedName, (*) => 0)
     finally tray.Dispose()
+    selectedChoice := ""
+    choose := (name, *) => selectedChoice := name
+    ObjBindMethod(choose, "Call", selectedName)("ignored", 1, choices)
+    AssertTest(selectedChoice = selectedName, "Menu callback binds the selected input state", failures)
     usMenu := DllCall("user32\GetSubMenu", "Ptr", choices.Handle, "Int", 1, "Ptr")
-    japaneseMenu := DllCall("user32\GetSubMenu", "Ptr", choices.Handle, "Int", 3, "Ptr")
-    wubiMenu := DllCall("user32\GetSubMenu", "Ptr", choices.Handle, "Int", 5, "Ptr")
-    japaneseHeading := DllCall("user32\GetMenuState", "Ptr", choices.Handle, "UInt", 2, "UInt", 0x400, "UInt")
-    chineseHeading := DllCall("user32\GetMenuState", "Ptr", choices.Handle, "UInt", 4, "UInt", 0x400, "UInt")
+    japaneseMenu := DllCall("user32\GetSubMenu", "Ptr", choices.Handle, "Int", 4, "Ptr")
+    wubiMenu := DllCall("user32\GetSubMenu", "Ptr", choices.Handle, "Int", 7, "Ptr")
+    for separator in [2, 5] {
+        flags := DllCall("user32\GetMenuState", "Ptr", choices.Handle, "UInt", separator, "UInt", 0x400, "UInt")
+        AssertTest((flags & 0x860) = 0x800, "Language groups use horizontal menu separators", failures)
+    }
+    for heading in [0, 3, 6] {
+        flags := DllCall("user32\GetMenuState", "Ptr", choices.Handle, "UInt", heading, "UInt", 0x400, "UInt")
+        AssertTest((flags & 0x63) = 0x03, "Language headings are disabled and stay in one column", failures)
+    }
     AssertTest(!usMenu && wubiMenu && japaneseMenu
-        && (japaneseHeading & 0x23) = 0x23 && (chineseHeading & 0x23) = 0x23
         && DllCall("user32\GetMenuItemCount", "Ptr", wubiMenu, "Int") = 3
-        && (DllCall("user32\GetMenuState", "Ptr", choices.Handle, "UInt", 5, "UInt", 0x400, "UInt") & 0x8)
-        && !(DllCall("user32\GetMenuState", "Ptr", choices.Handle, "UInt", 3, "UInt", 0x400, "UInt") & 0x8)
+        && (DllCall("user32\GetMenuState", "Ptr", choices.Handle, "UInt", 7, "UInt", 0x400, "UInt") & 0x8)
+        && !(DllCall("user32\GetMenuState", "Ptr", choices.Handle, "UInt", 4, "UInt", 0x400, "UInt") & 0x8)
         && (DllCall("user32\GetMenuState", "Ptr", wubiMenu, "UInt", 1, "UInt", 0x400, "UInt") & 0x8),
-        "Tray uses native language columns and checks only the selected input source and mode", failures)
+        "Tray checks only the selected input source and mode", failures)
+    menuProbe := InputRestorationProbe(config, profiles.Logger, Map())
+    menuProbe.Profiles := profiles
+    menuProbe.Rules := RuleEngine(config, profiles.Logger)
+    menuProbe.Startup := {IsEnabled: (*) => false}
+    menuWindow := Map("hwnd", 100, "exe", "probe.exe", "mode", "window", "identityKey", "probe")
+    tray := TrayMenuController(menuProbe)
+    try {
+        tray.Build({window: menuWindow, actual: Map("profile", usId), desired: Map(), rule: Map(), cached: false})
+        AssertTest(DllCall("user32\GetMenuItemCount", "Ptr", A_TrayMenu.Handle, "Int") > 10,
+            "Tray builds the complete native menu from a captured target", failures)
+    } finally {
+        A_TrayMenu.Delete()
+        tray.Dispose()
+    }
     AssertTest(InputRestoration.HasKnownModeMismatch(Map("kind", "ime", "imeOpen", "1"), Map("imeOpen", "0"))
         && !InputRestoration.HasKnownModeMismatch(Map("kind", "ime", "imeOpen", "unknown"), Map("imeOpen", "0")),
         "Legacy mode restoration writes only known differences", failures)
