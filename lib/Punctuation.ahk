@@ -1,4 +1,4 @@
-﻿#Requires AutoHotkey v2.0
+#Requires AutoHotkey v2.0
 
 class PunctuationCatalog {
     static Rules := PunctuationCatalog.BuildRules()
@@ -66,55 +66,93 @@ class PunctuationCatalog {
 class PunctuationController {
     __New(app) {
         this.App := app
-        this.Registrations := []
+        this.Registrations := Map()
+        this.Permits := Map()
+        this.Window := Map()
+    }
+
+    RefreshBindings() {
+        this.Permits := Map()
+        this.Window := Map()
         for rule in PunctuationCatalog.Rules {
-            condition := ObjBindMethod(this, "ShouldReplace", rule["id"])
-            HotIf(condition)
-            try {
-                for binding in rule["bindings"] {
-                    callback := ObjBindMethod(this, "TypeSymbol", rule, binding)
-                    Hotkey(binding["key"], callback)
-                    this.Registrations.Push(Map("key", binding["key"], "condition", condition))
-                }
-            } finally {
-                HotIf()
-            }
+            id := rule["id"]
+            enabled := !this.App.ObserveOnly && this.App.Config.HasPunctuationConversion(id)
+            if enabled || this.Registrations.Has(id)
+                this.SetBindingEnabled(rule, enabled)
         }
     }
 
+    SetBindingEnabled(rule, enabled) {
+        id := rule["id"]
+        registration := MapGet(this.Registrations, id, 0)
+        if !registration {
+            registration := {enabled: false, condition: ObjBindMethod(this, "ShouldReplace", id), installed: false}
+            this.Registrations[id] := registration
+        }
+        if registration.enabled = enabled
+            return
+        HotIf(registration.condition)
+        try {
+            for binding in rule["bindings"] {
+                if !registration.installed
+                    Hotkey(binding["key"], ObjBindMethod(this, "TypeSymbol", rule, binding))
+                else
+                    Hotkey(binding["key"], enabled ? "On" : "Off")
+            }
+            registration.installed := true
+            registration.enabled := enabled
+        } finally HotIf()
+    }
+
     ShouldReplace(id, *) {
-        if (!this.App.Enabled || this.App.ShuttingDown)
+        this.Permits[id] := 0
+        if this.App.ShuttingDown
             return false
-        ; Shift selects the punctuation variant; other shortcut modifiers pass through.
-        if (GetKeyState("Ctrl", "P") || GetKeyState("Alt", "P")
-            || GetKeyState("LWin", "P") || GetKeyState("RWin", "P"))
+        if GetKeyState("Ctrl", "P") || GetKeyState("Alt", "P")
+            || GetKeyState("LWin", "P") || GetKeyState("RWin", "P")
             return false
-        window := this.App.Identity.Resolve()
-        if (!window.Count || !this.App.Config.ShouldConvertPunctuation(MapGet(window, "exe", ""), id))
+        foreground := DllCall("user32\GetForegroundWindow", "Ptr")
+        if !foreground
             return false
-        profile := this.App.Profiles.Read(window)
-        imeOpen := IsChineseLanguageState(profile) && ImeMode.Supports(MapGet(profile, "kind", ""))
-            ? this.App.Mode.ReadOpenStatus(window, 30) : "unknown"
-        return ShouldReplacePunctuationState(profile, imeOpen)
+        if foreground != MapGet(this.Window, "hwnd", 0) || !this.App.Identity.IsCurrentWindow(this.Window)
+            this.Window := this.App.Identity.Resolve(foreground)
+        windowInfo := this.Window
+        if !windowInfo.Count || !this.App.Config.ShouldConvertPunctuation(WindowIdentity.AppSelectorFor(windowInfo), id)
+            return false
+        focus := this.App.Identity.GetForegroundFocus(windowInfo)
+        if !focus.Count || !focus["focused"]
+            return false
+        profile := this.App.Profiles.Read(windowInfo, focus, false)
+        if !IsChineseLanguageState(profile) || !ImeMode.Supports(profile["kind"])
+            || !this.App.Profiles.Catalog.Has(StrLower(profile["profile"]))
+            return false
+        imeOpen := this.App.Mode.ReadOpenStatus(windowInfo, 20, focus)
+        if !ShouldReplacePunctuationState(profile, imeOpen) || !this.App.Identity.IsForegroundFocus(windowInfo, focus)
+            return false
+        this.Permits[id] := {window: windowInfo, focus: focus, hkl: profile["hkl"], expires: TickCount64() + 120}
+        return true
     }
 
     TypeSymbol(rule, binding, *) {
-        window := this.App.Identity.Resolve()
-        if !window.Count
+        id := rule["id"]
+        permit := MapGet(this.Permits, id, 0)
+        this.Permits[id] := 0
+        if !permit || this.App.ShuttingDown || TickCount64() > permit.expires
             return
-        closingText := ""
-        if (binding["opening"] && rule["close"] != ""
-            && this.App.Config.ShouldPairPunctuation(MapGet(window, "exe", ""), rule["id"]))
-            closingText := rule["close"]
-        ; One send buffers physical input while the pair and cursor move are inserted.
+        if !this.App.Identity.IsForegroundFocus(permit.window, permit.focus)
+            || permit.hkl != "0x" Hex(DllCall("user32\GetKeyboardLayout", "UInt", permit.focus["threadId"], "Ptr"))
+            return
+        exe := WindowIdentity.AppSelectorFor(permit.window)
+        if !this.App.Config.ShouldConvertPunctuation(exe, id)
+            return
+        closingText := binding["opening"] && this.App.Config.ShouldPairPunctuation(exe, id) ? rule["close"] : ""
         SendInput(PunctuationCatalog.SendSequence(binding["text"], closingText))
     }
 
     Dispose() {
-        for registration in this.Registrations {
-            HotIf(registration["condition"])
-            try Hotkey(registration["key"], "Off")
-            finally HotIf()
+        for rule in PunctuationCatalog.Rules {
+            if this.Registrations.Has(rule["id"])
+                this.SetBindingEnabled(rule, false)
         }
     }
 }

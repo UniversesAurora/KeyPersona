@@ -297,6 +297,7 @@ RunSelfTests(baseDir) {
     reloadedConfig.Reload()
     AssertTest(!reloadedConfig.PunctuationEnabled && !reloadedConfig.Doc.Sections.Has("typing"),
         "Migration keeps explicit new settings", failures)
+    TestPunctuationBindings(reloadedConfig, failures)
     AssertTest(reloadedConfig.GetWindowRule(configWindow).Count > 0, "Window rule reload", failures)
     AssertTest(reloadedConfig.RemoveWindowRule(configWindow), "Window rule removal", failures)
     AssertTest(!reloadedConfig.GetWindowRule(configWindow).Count, "Window rule removal verification", failures)
@@ -455,6 +456,41 @@ RunSelfTests(baseDir) {
     }
     FileAppend("SELF-TEST PASSED`n", progressPath, "UTF-8")
     return 0
+}
+
+TestPunctuationBindings(config, failures) {
+    controller := PunctuationBindingProbe({ObserveOnly: false, Config: config})
+    exe := "punctuation-fixture.exe"
+    config.SetAutoSwitch(false)
+    try {
+        controller.RefreshBindings()
+        AssertTest(!controller.Registrations.Count, "Disabled conversion does not register hotkeys", failures)
+
+        config.SetPunctuationEnabled(true)
+        controller.RefreshBindings()
+        AssertTest(MapGet(controller.Registrations, "backtick", {enabled: false}).enabled && config.ShouldConvertPunctuation(exe, "backtick")
+            && !config.ResolveAppInputOption(exe, "autoSwitch"),
+            "Global punctuation conversion works with automatic switching disabled", failures)
+
+        config.SetPunctuationEnabled(false)
+        config.SetAppPunctuationOption(exe, "", false, "1")
+        config.SetAppInputOption(exe, "autoSwitch", "0")
+        controller.RefreshBindings()
+        AssertTest(MapGet(controller.Registrations, "backtick", {enabled: false}).enabled && config.ShouldConvertPunctuation(exe, "backtick")
+            && !config.ShouldConvertPunctuation("other.exe", "backtick") && !config.ResolveAppInputOption(exe, "autoSwitch"),
+            "Per-app punctuation conversion works independently of per-app automatic switching", failures)
+    } finally {
+        config.ClearAppPunctuationOptions(exe)
+        config.SetAppInputOption(exe, "autoSwitch", "inherit")
+        config.SetPunctuationEnabled(false)
+        controller.Dispose()
+    }
+}
+
+class PunctuationBindingProbe extends PunctuationController {
+    SetBindingEnabled(rule, enabled) {
+        this.Registrations[rule["id"]] := {enabled: enabled}
+    }
 }
 
 TestProfileSyncRetry(baseDir, catalog, logger, failures) {

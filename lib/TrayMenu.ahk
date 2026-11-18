@@ -246,6 +246,8 @@ class TrayMenuController {
                     pairMenu.Add("自动补齐（全局）", ObjBindMethod(this, "TogglePunctuationOption", id, true))
                     if config.PunctuationPairs[id]
                         pairMenu.Check("自动补齐（全局）")
+                    if !config.PunctuationEnabled || !config.PunctuationConvert[id]
+                        this.AddStatus(pairMenu, "生效需开启全局转换和此符号")
                     category.Add(rule["label"], pairMenu)
                     if config.PunctuationConvert[id]
                         category.Check(rule["label"])
@@ -284,9 +286,10 @@ class TrayMenuController {
                 if (rule["close"] = "")
                     continue
                 id := rule["id"]
-                appPairs.Add(rule["label"], this.BuildAppPunctuationOptionMenu(exe, id, true))
+                pairLabel := rule["label"] (config.ShouldConvertPunctuation(exe, id) ? "" : "（转换关闭）")
+                appPairs.Add(pairLabel, this.BuildAppPunctuationOptionMenu(exe, id, true))
                 if config.ShouldPairPunctuation(exe, id)
-                    appPairs.Check(rule["label"])
+                    appPairs.Check(pairLabel)
             }
             appMenu.Add("自动补齐", appPairs)
             symbols.Add(appLabel, appMenu)
@@ -309,24 +312,21 @@ class TrayMenuController {
     }
 
     TogglePunctuation(*) {
-        this.App.Config.SetPunctuationEnabled(!this.App.Config.PunctuationEnabled)
-        this.Refresh(true)
+        this.UpdatePunctuation(ObjBindMethod(this.App.Config, "SetPunctuationEnabled",
+            !this.App.Config.PunctuationEnabled))
     }
 
     TogglePunctuationOption(id, pair, *) {
         options := pair ? this.App.Config.PunctuationPairs : this.App.Config.PunctuationConvert
-        this.App.Config.SetPunctuationOption(id, pair, !options[id])
-        this.Refresh(true)
+        this.UpdatePunctuation(ObjBindMethod(this.App.Config, "SetPunctuationOption", id, pair, !options[id]))
     }
 
     SetAppPunctuationOption(exe, id, pair, mode, *) {
-        this.App.Config.SetAppPunctuationOption(exe, id, pair, mode)
-        this.Refresh(true)
+        this.UpdatePunctuation(ObjBindMethod(this.App.Config, "SetAppPunctuationOption", exe, id, pair, mode))
     }
 
     ClearAppPunctuationOptions(exe, *) {
-        this.App.Config.ClearAppPunctuationOptions(exe)
-        this.Refresh(true)
+        this.UpdatePunctuation(ObjBindMethod(this.App.Config, "ClearAppPunctuationOptions", exe))
     }
 
     UpdatePunctuation(update) {

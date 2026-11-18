@@ -457,6 +457,16 @@ class KeyPersonaConfig {
         return MapGet(pair ? this.PunctuationPairs : this.PunctuationConvert, id, false)
     }
 
+    HasPunctuationConversion(id) {
+        if this.ShouldConvertPunctuation("", id)
+            return true
+        for exe in this.PunctuationApps {
+            if this.ShouldConvertPunctuation(exe, id)
+                return true
+        }
+        return false
+    }
+
     ShouldConvertPunctuation(exe, id) {
         return this.ResolvePunctuationOption(exe) && this.ResolvePunctuationOption(exe, id)
     }
