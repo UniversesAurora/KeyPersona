@@ -1,6 +1,8 @@
 #Requires AutoHotkey v2.0
 
 class TrayMenuController {
+    static NOTIFY_ICON := 0x0404 ; AutoHotkey's tray icon ID and callback message.
+
     __New(app) {
         this.App := app
         this.PunctuationKey := ""
@@ -9,8 +11,54 @@ class TrayMenuController {
         this.LastLeftClick := 0
         this.TrayMessageCallback := ObjBindMethod(this, "OnTrayMessage")
         this.ShowMenuCallback := ObjBindMethod(this, "ShowMenu")
-        OnMessage(0x0404, this.TrayMessageCallback)
+        this.RegisterIconCallback := ObjBindMethod(this, "EnsureIcon")
+        this.TaskbarCreatedCallback := ObjBindMethod(this, "OnTaskbarCreated")
+        this.TaskbarCreated := 0
+        this.RegistrationDeadline := 0
+    }
+
+    Start() {
+        OnMessage(TrayMenuController.NOTIFY_ICON, this.TrayMessageCallback)
         A_IconTip := AppInfo.Name
+        if !A_IsCompiled && FileExist(A_ScriptDir "\" AppInfo.IconFile)
+            TraySetIcon(A_ScriptDir "\" AppInfo.IconFile)
+        this.TaskbarCreated := DllCall("user32\RegisterWindowMessageW", "WStr", "TaskbarCreated", "UInt")
+        if this.TaskbarCreated {
+            OnMessage(this.TaskbarCreated, this.TaskbarCreatedCallback)
+            ; Explorer may be running at a lower integrity level than the login task.
+            if A_IsAdmin
+                DllCall("user32\ChangeWindowMessageFilterEx", "Ptr", A_ScriptHwnd, "UInt", this.TaskbarCreated,
+                    "UInt", 1, "Ptr", 0, "Int") ; MSGFLT_ALLOW
+        }
+        this.OnTaskbarCreated()
+    }
+
+    OnTaskbarCreated(*) {
+        this.RegistrationDeadline := TickCount64() + 30000
+        SetTimer(this.RegisterIconCallback, -1)
+    }
+
+    EnsureIcon() {
+        if this.IsIconRegistered()
+            return
+        A_IconHidden := true
+        A_IconHidden := false
+        if this.IsIconRegistered()
+            return
+        if TickCount64() < this.RegistrationDeadline
+            SetTimer(this.RegisterIconCallback, -2000)
+        else
+            this.App.Logger.Warn("Windows notification area did not accept the tray icon")
+    }
+
+    IsIconRegistered() {
+        ; NIM_MODIFY verifies the registration even when Windows puts the icon in overflow.
+        ; Reapply the same NIF_MESSAGE callback without changing its visibility or position.
+        data := Buffer(A_PtrSize = 8 ? 976 : 956, 0) ; NOTIFYICONDATAW
+        message := TrayMenuController.NOTIFY_ICON
+        NumPut("UInt", data.Size, data)
+        NumPut("Ptr", A_ScriptHwnd, "UInt", message, "UInt", 1, "UInt", message, data, A_PtrSize)
+        return !!DllCall("shell32\Shell_NotifyIconW", "UInt", 1, "Ptr", data, "Int")
     }
 
     Build(context) {
@@ -440,7 +488,10 @@ class TrayMenuController {
     }
 
     Dispose() {
-        try OnMessage(0x0404, this.TrayMessageCallback, 0)
+        try OnMessage(TrayMenuController.NOTIFY_ICON, this.TrayMessageCallback, 0)
+        if this.TaskbarCreated
+            OnMessage(this.TaskbarCreated, this.TaskbarCreatedCallback, 0)
+        try SetTimer(this.RegisterIconCallback, 0)
         try SetTimer(this.ShowMenuCallback, 0)
         try this.About.Dispose()
     }

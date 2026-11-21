@@ -70,6 +70,8 @@ class KeyPersonaApp {
         OnMessage(KeyPersonaApp.EVENT_MESSAGE, this.MessageCallback)
         if !this.Hook.Start()
             this.Logger.Warn("Some window readiness events unavailable; using foreground events and timed checks")
+        if this.Tray
+            this.Tray.Start()
         this.Logger.Info(AppInfo.Name " started" (this.ObserveOnly ? " in observe-only mode" : ""))
         this.SyncDiscoveredProfiles()
         this.Punctuation.RefreshBindings()

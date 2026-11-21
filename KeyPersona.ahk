@@ -1,5 +1,6 @@
 #Requires AutoHotkey v2.0
 #SingleInstance Off
+#NoTrayIcon
 #Warn All, StdOut
 Persistent
 
@@ -26,8 +27,6 @@ Persistent
 #Include lib\SelfTest.ahk
 
 SetWorkingDir(A_ScriptDir)
-if !A_IsCompiled && FileExist(A_ScriptDir "\" AppInfo.IconFile)
-    TraySetIcon(A_ScriptDir "\" AppInfo.IconFile)
 OnError(GlobalErrorHandler)
 
 if HasArgument("--self-test") {
@@ -35,8 +34,6 @@ if HasArgument("--self-test") {
 }
 
 observeOnly := HasArgument("--observe-only")
-if observeOnly
-    A_IconHidden := true
 smokeSeconds := ArgumentValue("--smoke-seconds=", 0)
 appBaseDir := RuntimeBaseDir()
 try {
@@ -69,8 +66,10 @@ try {
 } catch Error as startupError {
     try KEYPERSONA_APP.Logger.Error("Fatal startup error: " startupError.Message " at " startupError.File ":" startupError.Line)
     FileAppend(AppInfo.Name " startup failed: " startupError.Message "`n", "**", "UTF-8")
-    if !observeOnly
+    if !observeOnly {
+        A_IconHidden := false
         TrayTip("启动失败。" startupError.Message, AppInfo.Name, "Iconx")
+    }
     ExitApp(1)
 }
 
